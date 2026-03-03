@@ -1,0 +1,20 @@
+{
+    "name": "SynthTraining.Editor",
+    "rootNamespace": "Genesis.Synth.Training.Editor",
+    "references": [
+        "SynthTraining.Runtime",
+        "Synth.Runtime",
+        "Mujoco.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

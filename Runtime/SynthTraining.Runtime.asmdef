@@ -1,0 +1,19 @@
+{
+    "name": "SynthTraining.Runtime",
+    "rootNamespace": "Genesis.Synth.Training",
+    "references": [
+        "Synth.Runtime",
+        "Mujoco.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "TorchSharp.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

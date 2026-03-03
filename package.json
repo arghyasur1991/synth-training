@@ -1,0 +1,17 @@
+{
+  "name": "com.genesis.synth.training",
+  "displayName": "Synth Training",
+  "version": "1.0.0",
+  "description": "On-device SAC training for synth humanoids using TorchSharp. Supports macOS Metal, Android/Quest, and Windows CPU.",
+  "dependencies": {
+    "com.genesis.synth": "1.0.0",
+    "org.mujoco": "3.5.0"
+  },
+  "author": {
+    "name": "Genesis",
+    "url": "https://github.com/arghyasur1991/synth-training"
+  },
+  "license": "Apache-2.0",
+  "licensesUrl": "https://github.com/arghyasur1991/synth-training/blob/main/LICENSE",
+  "hideInEditor": false
+}

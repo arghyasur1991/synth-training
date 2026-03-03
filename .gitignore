@@ -1,0 +1,20 @@
+# Native plugin binaries (shipped via build or release artifacts)
+Plugins/TorchSharp/**/*.dylib
+Plugins/TorchSharp/**/*.dll
+Plugins/TorchSharp/**/*.so
+
+# Keep meta files for plugins
+!Plugins/**/*.meta
+
+# Build artifacts (~ suffix makes Unity ignore the folder)
+build~/
+build~.meta
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.csproj
+*.sln
