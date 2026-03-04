@@ -85,10 +85,11 @@ namespace Genesis.Sentience.Learning
 
         [Header("Reward Scaling")]
         [Tooltip("Multiplier for raw reward before storing in replay buffer. " +
-            "With 225-dim actions, SAC's entropy bonus is ~400/step. Reward must be comparable " +
-            "or Q-networks learn the value of randomness instead of the task.")]
-        [Range(1f, 100f)]
-        public float rewardScale = 5f;
+            "Must be large enough that the task reward signal is comparable to SAC's " +
+            "entropy bonus (alpha * dim). With 54 active dims and alpha=0.10, " +
+            "entropy is ~4/step, so reward should be ≥5/step.")]
+        [Range(1f, 200f)]
+        public float rewardScale = 50f;
 
         [Header("Persistence")]
         [Tooltip("Auto-save every N minutes (0 = disabled)")]
