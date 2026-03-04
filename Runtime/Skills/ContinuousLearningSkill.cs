@@ -175,6 +175,11 @@ namespace Genesis.Sentience.Learning
         // Frame time tracking for adaptive training throttle
         private volatile float _lastFrameMs;
 
+        // Live metrics for dashboard
+        private TrainingMetrics _metrics;
+        private float _lastMetricsSampleTime;
+        private const float METRICS_SAMPLE_INTERVAL = 0.1f; // 10 Hz
+
         // --- Diagnostics ---
         public bool IsMobile => _isMobile;
         public int TotalDecisions => _totalDecisions;
@@ -195,6 +200,7 @@ namespace Genesis.Sentience.Learning
         public int AssistHoldRemaining => _assistHoldRemaining;
         public int CurriculumStage => _curriculum?.CurrentStage ?? -1;
         public int CurriculumActiveJoints => _curriculum?.ActiveActionDim ?? 0;
+        public TrainingMetrics Metrics => _metrics;
 
         public unsafe bool Initialize()
         {
@@ -377,6 +383,8 @@ namespace Genesis.Sentience.Learning
                 _trainingThread.MaxStepsPerSecond = maxTrainingSPS;
                 _trainingThread.Start();
 
+                _metrics = new TrainingMetrics();
+
                 Debug.Log($"ContinuousLearningSkill: Init timing — " +
                     $"agent+buffer={msAgent}ms, reward={msReward - msAgent}ms, " +
                     $"motion={msMotion - msReward}ms, state={msState - msMotion}ms, " +
@@ -440,6 +448,17 @@ namespace Genesis.Sentience.Learning
                 float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
                     meanStrain, _contact, _bodyWeight) * rewardScale;
                 _replayBuffer.Add(_prevObs, _prevAction, reward, _normalizedObs);
+
+                float now = Time.realtimeSinceStartup;
+                if (_metrics != null && now - _lastMetricsSampleTime >= METRICS_SAMPLE_INTERVAL)
+                {
+                    _metrics.Sample(
+                        in _reward.LastSnapshot,
+                        _agent.Alpha, _agent.LastQLoss, _agent.LastActorLoss, _agent.LastAlphaLoss,
+                        _trainingThread?.SPS ?? 0f, _replayBuffer.Count,
+                        _curriculum?.CurrentStage ?? -1, _curriculum?.ActiveActionDim ?? 0);
+                    _lastMetricsSampleTime = now;
+                }
             }
 
             // Assisted hold: physically pin the synth in the assisted pose each frame.

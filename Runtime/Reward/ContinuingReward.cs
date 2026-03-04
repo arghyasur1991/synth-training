@@ -10,6 +10,17 @@ namespace Genesis.Sentience.Learning
 {
     public enum AgentPhase { Fallen, Recovering, Standing, Moving }
 
+    /// <summary>Per-component weighted reward values from the last Compute() call.</summary>
+    public struct RewardSnapshot
+    {
+        public float Alive, Height, Orientation, Energy, Recovery;
+        public float Imitation, VelocityUp, Comfort;
+        public float FootSupport, HandBrace, ActiveSupport;
+        public float PhaseBonus, StandBlend, RootZ;
+        public float RawReward, CenteredReward, RewardBar;
+        public AgentPhase Phase;
+    }
+
     /// <summary>
     /// Multi-phase continuing reward for non-episodic learning.
     ///
@@ -77,17 +88,19 @@ namespace Genesis.Sentience.Learning
         private float _prevRootZ;
         private bool _prevRootZInitialized;
 
-        // Diagnostics (written every Compute, read by Inspector)
+        // Diagnostics (written every Compute, read by Inspector / Dashboard)
         private AgentPhase _lastPhase;
         private float _lastRawReward;
         private float _lastCenteredReward;
         private float _lastNearestFrameDist;
+        private RewardSnapshot _lastSnapshot;
 
         public AgentPhase LastPhase => _lastPhase;
         public float LastRawReward => _lastRawReward;
         public float LastCenteredReward => _lastCenteredReward;
         public float LastNearestFrameDistance => _lastNearestFrameDist;
         public float RewardBar => _rewardBar;
+        public ref readonly RewardSnapshot LastSnapshot => ref _lastSnapshot;
         public bool HasReferenceFrames => _numReferenceFrames > 0;
         public int ReferenceNq => _refNq;
         public int NumReferenceFrames => _numReferenceFrames;
@@ -398,12 +411,32 @@ namespace Genesis.Sentience.Learning
                             + phaseBonus;
 
             _lastRawReward = rawReward;
+
+            _lastSnapshot.Alive = W_ALIVE * rAlive;
+            _lastSnapshot.Height = (W_HEIGHT + heightBoost) * rHeight;
+            _lastSnapshot.Orientation = orientWeight * rOrientation;
+            _lastSnapshot.Energy = energyWeight * rEnergy;
+            _lastSnapshot.Recovery = recoveryWeight * rRecovery;
+            _lastSnapshot.Imitation = imitationWeight * rImitation;
+            _lastSnapshot.VelocityUp = (velocityWeight + velBoost) * rVelocityUp;
+            _lastSnapshot.Comfort = W_COMFORT * rComfort;
+            _lastSnapshot.FootSupport = footSupportWeight * rFootSupport;
+            _lastSnapshot.HandBrace = handBraceWeight * rHandBrace;
+            _lastSnapshot.ActiveSupport = activeSupportWeight * rActiveSupport;
+            _lastSnapshot.PhaseBonus = phaseBonus;
+            _lastSnapshot.StandBlend = standBlend;
+            _lastSnapshot.RootZ = rootZ;
+            _lastSnapshot.Phase = phase;
+
             _stepCount++;
 
             if (_stepCount <= CENTERING_WARMUP)
             {
                 _rewardBar = rawReward;
                 _lastCenteredReward = rawReward;
+                _lastSnapshot.RawReward = rawReward;
+                _lastSnapshot.CenteredReward = rawReward;
+                _lastSnapshot.RewardBar = _rewardBar;
                 return rawReward;
             }
 
@@ -419,6 +452,9 @@ namespace Genesis.Sentience.Learning
 
             float centeredReward = rawReward - _rewardBar;
             _lastCenteredReward = centeredReward;
+            _lastSnapshot.RawReward = rawReward;
+            _lastSnapshot.CenteredReward = centeredReward;
+            _lastSnapshot.RewardBar = _rewardBar;
             return centeredReward;
         }
 
