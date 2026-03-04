@@ -110,9 +110,18 @@ namespace Genesis.Sentience.Learning
             "Like a parent picking up a baby — gives the agent experience of being upright.")]
         public bool enableAssistedPoses = true;
 
-        [Tooltip("Seconds in Fallen phase before teleporting to a reference pose.")]
+        [Tooltip("Base seconds in Fallen phase before teleporting to a reference pose.")]
         [Range(5f, 300f)]
         public float assistIntervalSeconds = 30f;
+
+        [Tooltip("Extra seconds added per assist. Interval = base + annealRate * assistCount. " +
+            "Gives the agent progressively longer practice between teleports.")]
+        [Range(0f, 30f)]
+        public float assistAnnealRate = 5f;
+
+        [Tooltip("Maximum assist interval after annealing (seconds).")]
+        [Range(30f, 600f)]
+        public float assistMaxInterval = 300f;
 
         [Tooltip("Random noise added to joint angles after teleport (radians). Varies the starting condition.")]
         [Range(0f, 0.1f)]
@@ -122,7 +131,7 @@ namespace Genesis.Sentience.Learning
             "Joint stiffness/damping keeps the synth roughly upright, giving the agent " +
             "several high-reward transitions to learn from.")]
         [Range(0, 600)]
-        public int assistHoldFrames = 150; 
+        public int assistHoldFrames = 150;
 
         // --- ISynthSkill ---
         public string Name => "ContinuousLearning";
@@ -199,6 +208,9 @@ namespace Genesis.Sentience.Learning
         public int AssistCount => _assistCount;
         public float FallenTimer => _fallenTimer;
         public int AssistHoldRemaining => _assistHoldRemaining;
+        public float AssistEffectiveInterval => Mathf.Min(
+            assistIntervalSeconds + assistAnnealRate * _assistCount,
+            assistMaxInterval);
         public int CurriculumStage => _curriculum?.CurrentStage ?? -1;
         public int CurriculumActiveJoints => _curriculum?.ActiveActionDim ?? 0;
         public TrainingMetrics Metrics => _metrics;
@@ -479,6 +491,7 @@ namespace Genesis.Sentience.Learning
             }
 
             // Assisted poses: teleport when stuck fallen too long (wall-clock time)
+            // Interval anneals: base + annealRate * assistCount, capped at max
             if (enableAssistedPoses)
             {
                 bool isFallen = _reward.LastPhase == AgentPhase.Fallen;
@@ -490,7 +503,11 @@ namespace Genesis.Sentience.Learning
                     ? Time.realtimeSinceStartup - _lastFallenStartTime
                     : 0f;
 
-                if (_fallenTimer >= assistIntervalSeconds && _assistQposBuf != null)
+                float effectiveInterval = Mathf.Min(
+                    assistIntervalSeconds + assistAnnealRate * _assistCount,
+                    assistMaxInterval);
+
+                if (_fallenTimer >= effectiveInterval && _assistQposBuf != null)
                 {
                     TeleportToAssistedPose();
                     _lastFallenStartTime = Time.realtimeSinceStartup;
@@ -592,9 +609,12 @@ namespace Genesis.Sentience.Learning
                 jointSumSq += d * d;
             }
             float diffFromStanding = (float)Math.Sqrt(jointSumSq);
+            float nextInterval = Mathf.Min(
+                assistIntervalSeconds + assistAnnealRate * _assistCount,
+                assistMaxInterval);
             Debug.Log($"[ContinuousLearning] Assisted pose #{_assistCount} — {poseDesc}, " +
                 $"holding {assistHoldFrames} steps, diffFromStanding={diffFromStanding:F3}, " +
-                $"rootZ={_assistQposBuf[2]:F3}");
+                $"rootZ={_assistQposBuf[2]:F3}, nextInterval={nextInterval:F0}s");
         }
 
         /// <summary>
