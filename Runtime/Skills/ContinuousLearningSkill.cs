@@ -85,10 +85,11 @@ namespace Genesis.Sentience.Learning
 
         [Header("Reward Scaling")]
         [Tooltip("Multiplier for raw reward before storing in replay buffer. " +
-            "With 225-dim actions, SAC's entropy bonus is ~400/step. Reward must be comparable " +
-            "or Q-networks learn the value of randomness instead of the task.")]
-        [Range(1f, 100f)]
-        public float rewardScale = 5f;
+            "Must be large enough that the task reward signal is comparable to SAC's " +
+            "entropy bonus (alpha * dim). With 54 active dims and alpha=0.10, " +
+            "entropy is ~4/step, so reward should be ≥5/step.")]
+        [Range(1f, 200f)]
+        public float rewardScale = 50f;
 
         [Header("Persistence")]
         [Tooltip("Auto-save every N minutes (0 = disabled)")]
@@ -100,14 +101,27 @@ namespace Genesis.Sentience.Learning
         [Tooltip("Delete all saved state on next Play. Use when model architecture changes. Auto-resets after deletion.")]
         public bool deleteSavesOnStart;
 
+        [Header("Action Curriculum")]
+        [Tooltip("Enable progressive action curriculum — unlock joints in stages as competency grows")]
+        public bool enableCurriculum = true;
+
         [Header("Assisted Poses")]
         [Tooltip("Periodically teleport to reference clip poses when stuck in Fallen phase. " +
             "Like a parent picking up a baby — gives the agent experience of being upright.")]
         public bool enableAssistedPoses = true;
 
-        [Tooltip("Seconds in Fallen phase before teleporting to a reference pose.")]
+        [Tooltip("Base seconds in Fallen phase before teleporting to a reference pose.")]
         [Range(5f, 300f)]
-        public float assistIntervalSeconds = 300f;
+        public float assistIntervalSeconds = 30f;
+
+        [Tooltip("Extra seconds added per assist. Interval = base + annealRate * assistCount. " +
+            "Gives the agent progressively longer practice between teleports.")]
+        [Range(0f, 30f)]
+        public float assistAnnealRate = 5f;
+
+        [Tooltip("Maximum assist interval after annealing (seconds).")]
+        [Range(30f, 600f)]
+        public float assistMaxInterval = 300f;
 
         [Tooltip("Random noise added to joint angles after teleport (radians). Varies the starting condition.")]
         [Range(0f, 0.1f)]
@@ -117,7 +131,7 @@ namespace Genesis.Sentience.Learning
             "Joint stiffness/damping keeps the synth roughly upright, giving the agent " +
             "several high-reward transitions to learn from.")]
         [Range(0, 600)]
-        public int assistHoldFrames = 600; 
+        public int assistHoldFrames = 150;
 
         // --- ISynthSkill ---
         public string Name => "ContinuousLearning";
@@ -130,6 +144,8 @@ namespace Genesis.Sentience.Learning
         private bool _isMobile;
 
         private SynthProprioception _proprioSense;
+        private SynthContact _contact;
+        private float _bodyWeight;
         private BoneFilterConfig _filter;
 
         private SACAgent _agent;
@@ -138,6 +154,7 @@ namespace Genesis.Sentience.Learning
         private ObservationNormalizer _obsNormalizer;
         private TrainingThread _trainingThread;
         private StatePersister _persister;
+        private ActionCurriculum _curriculum;
 
         // Pre-allocated buffers (zero-allocation Act() hot path)
         private float[] _normalizedObs;
@@ -168,6 +185,11 @@ namespace Genesis.Sentience.Learning
         // Frame time tracking for adaptive training throttle
         private volatile float _lastFrameMs;
 
+        // Live metrics for dashboard
+        private TrainingMetrics _metrics;
+        private float _lastMetricsSampleTime;
+        private const float METRICS_SAMPLE_INTERVAL = 0.1f; // 10 Hz
+
         // --- Diagnostics ---
         public bool IsMobile => _isMobile;
         public int TotalDecisions => _totalDecisions;
@@ -186,6 +208,12 @@ namespace Genesis.Sentience.Learning
         public int AssistCount => _assistCount;
         public float FallenTimer => _fallenTimer;
         public int AssistHoldRemaining => _assistHoldRemaining;
+        public float AssistEffectiveInterval => Mathf.Min(
+            assistIntervalSeconds + assistAnnealRate * _assistCount,
+            assistMaxInterval);
+        public int CurriculumStage => _curriculum?.CurrentStage ?? -1;
+        public int CurriculumActiveJoints => _curriculum?.ActiveActionDim ?? 0;
+        public TrainingMetrics Metrics => _metrics;
 
         public unsafe bool Initialize()
         {
@@ -271,6 +299,27 @@ namespace Genesis.Sentience.Learning
                     _filter.nbody);
                 _reward.SetNearestFrameInterval(nearestFrameInterval);
 
+                _contact = GetComponent<SynthContact>();
+                if (_contact == null) _contact = GetComponentInParent<SynthContact>();
+                if (_contact == null) _contact = GetComponentInChildren<SynthContact>(true);
+
+                if (_contact != null)
+                {
+                    var mjModel = MjScene.Instance.Model;
+                    int nb = (int)mjModel->nbody;
+                    double totalMass = 0;
+                    for (int i = 0; i < nb; i++)
+                        totalMass += mjModel->body_mass[i];
+                    _bodyWeight = (float)(totalMass * 9.81);
+                    Debug.Log($"ContinuousLearningSkill: Contact rewards enabled — " +
+                        $"bodyWeight={_bodyWeight:F1}N ({totalMass:F2}kg)");
+                }
+                else
+                {
+                    Debug.LogWarning("ContinuousLearningSkill: No SynthContact found — " +
+                        "contact-based micro-rewards disabled");
+                }
+
                 long msReward = sw.ElapsedMilliseconds;
 
                 if (referenceClips != null && referenceClips.Length > 0)
@@ -279,6 +328,16 @@ namespace Genesis.Sentience.Learning
                 long msMotion = sw.ElapsedMilliseconds;
 
                 _zeroAction = new float[actDim];
+
+                // Initialize progressive action curriculum
+                if (enableCurriculum)
+                {
+                    _curriculum = new ActionCurriculum();
+                    var entity = GetComponent<SynthEntity>() ?? GetComponentInParent<SynthEntity>();
+                    var boneMapper = entity?.BoneMapper;
+                    _curriculum.Initialize(MjScene.Instance.Model, _filter, boneMapper);
+                    _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
+                }
 
                 int nqInit = (int)MjScene.Instance.Model->nq;
                 _standingQpos = new double[nqInit];
@@ -303,7 +362,7 @@ namespace Genesis.Sentience.Learning
                 {
                     try
                     {
-                        _persister.Load(_agent, _replayBuffer, _obsNormalizer, _reward);
+                        _persister.Load(_agent, _replayBuffer, _obsNormalizer, _reward, _curriculum);
                         _totalDecisions = _persister.LoadedDecisionCount;
 
                         if (_persister.LoadPhysicsState(MjScene.Instance.Data))
@@ -311,6 +370,9 @@ namespace Genesis.Sentience.Learning
                             MujocoLib.mj_forward(MjScene.Instance.Model, MjScene.Instance.Data);
                             Debug.Log("ContinuousLearningSkill: Physics state restored");
                         }
+
+                        if (enableCurriculum && _curriculum != null)
+                            _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
 
                         Debug.Log($"ContinuousLearningSkill: Restored state — " +
                                   $"{_totalDecisions} decisions, {_replayBuffer.Count} replay entries");
@@ -336,6 +398,8 @@ namespace Genesis.Sentience.Learning
                 _trainingThread = new TrainingThread(_agent, _replayBuffer, sacConfig, learningStarts, _isMobile);
                 _trainingThread.MaxStepsPerSecond = maxTrainingSPS;
                 _trainingThread.Start();
+
+                _metrics = new TrainingMetrics();
 
                 Debug.Log($"ContinuousLearningSkill: Init timing — " +
                     $"agent+buffer={msAgent}ms, reward={msReward - msAgent}ms, " +
@@ -396,8 +460,21 @@ namespace Genesis.Sentience.Learning
             // Store previous transition
             if (_hasPrevTransition)
             {
-                float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model) * rewardScale;
+                float meanStrain = _proprioSense.Strain?.MeanStrain() ?? 0f;
+                float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
+                    meanStrain, _contact, _bodyWeight) * rewardScale;
                 _replayBuffer.Add(_prevObs, _prevAction, reward, _normalizedObs);
+
+                float now = Time.realtimeSinceStartup;
+                if (_metrics != null && now - _lastMetricsSampleTime >= METRICS_SAMPLE_INTERVAL)
+                {
+                    _metrics.Sample(
+                        in _reward.LastSnapshot,
+                        _agent.Alpha, _agent.LastQLoss, _agent.LastActorLoss, _agent.LastAlphaLoss,
+                        _trainingThread?.SPS ?? 0f, _replayBuffer.Count,
+                        _curriculum?.CurrentStage ?? -1, _curriculum?.ActiveActionDim ?? 0);
+                    _lastMetricsSampleTime = now;
+                }
             }
 
             // Assisted hold: physically pin the synth in the assisted pose each frame.
@@ -417,6 +494,7 @@ namespace Genesis.Sentience.Learning
             }
 
             // Assisted poses: teleport when stuck fallen too long (wall-clock time)
+            // Interval anneals: base + annealRate * assistCount, capped at max
             if (enableAssistedPoses)
             {
                 bool isFallen = _reward.LastPhase == AgentPhase.Fallen;
@@ -428,7 +506,11 @@ namespace Genesis.Sentience.Learning
                     ? Time.realtimeSinceStartup - _lastFallenStartTime
                     : 0f;
 
-                if (_fallenTimer >= assistIntervalSeconds && _assistQposBuf != null)
+                float effectiveInterval = Mathf.Min(
+                    assistIntervalSeconds + assistAnnealRate * _assistCount,
+                    assistMaxInterval);
+
+                if (_fallenTimer >= effectiveInterval && _assistQposBuf != null)
                 {
                     TeleportToAssistedPose();
                     _lastFallenStartTime = Time.realtimeSinceStartup;
@@ -442,6 +524,16 @@ namespace Genesis.Sentience.Learning
                 rawAction = _agent.GetRandomAction(_rng);
             else
                 rawAction = _agent.GetAction(_normalizedObs);
+
+            // Apply curriculum mask (zero out inactive joints)
+            _curriculum?.MaskActions(rawAction);
+
+            // Step curriculum and check for stage advancement
+            if (_curriculum != null && _reward != null)
+            {
+                if (_curriculum.Step(_reward.LastPhase))
+                    _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
+            }
 
             // Exponential action smoothing: prevents chaotic torque oscillation
             float a = actionSmoothingAlpha;
@@ -520,9 +612,12 @@ namespace Genesis.Sentience.Learning
                 jointSumSq += d * d;
             }
             float diffFromStanding = (float)Math.Sqrt(jointSumSq);
+            float nextInterval = Mathf.Min(
+                assistIntervalSeconds + assistAnnealRate * _assistCount,
+                assistMaxInterval);
             Debug.Log($"[ContinuousLearning] Assisted pose #{_assistCount} — {poseDesc}, " +
                 $"holding {assistHoldFrames} steps, diffFromStanding={diffFromStanding:F3}, " +
-                $"rootZ={_assistQposBuf[2]:F3}");
+                $"rootZ={_assistQposBuf[2]:F3}, nextInterval={nextInterval:F0}s");
         }
 
         /// <summary>
@@ -724,7 +819,7 @@ namespace Genesis.Sentience.Learning
                 try
                 {
                     _persister.SaveWithSnapshot(_agent, _replayBuffer, _obsNormalizer,
-                        _reward, decisions, qposSnap, qvelSnap, ctrlSnap);
+                        _reward, decisions, qposSnap, qvelSnap, ctrlSnap, _curriculum);
                 }
                 catch (Exception e)
                 {
@@ -815,7 +910,7 @@ namespace Genesis.Sentience.Learning
                     try
                     {
                         _persister.SaveWithSnapshot(_agent, _replayBuffer, _obsNormalizer,
-                            _reward, decisions, qposSnap, qvelSnap, ctrlSnap);
+                            _reward, decisions, qposSnap, qvelSnap, ctrlSnap, _curriculum);
                         Debug.Log($"ContinuousLearningSkill: Quit save complete — {decisions} decisions");
                     }
                     catch (Exception e)

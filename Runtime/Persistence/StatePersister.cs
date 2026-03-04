@@ -23,6 +23,7 @@ namespace Genesis.Sentience.Learning
         private const string BUFFER_FILE = "replay_buffer.bin";
         private const string NORMALIZER_FILE = "normalizer.bin";
         private const string REWARD_FILE = "reward_state.bin";
+        private const string CURRICULUM_FILE = "curriculum_state.bin";
         private const string PHYSICS_FILE = "physics_state.bin";
         private const string AGENT_DIR = "agent";
         private const int IO_BUFFER_SIZE = 1024 * 1024;
@@ -53,7 +54,8 @@ namespace Genesis.Sentience.Learning
 
         public unsafe void Save(SACAgent agent, ReplayBuffer buffer,
             ObservationNormalizer normalizer, ContinuingReward reward,
-            int totalDecisions, MujocoLib.mjData_* physicsData = null)
+            int totalDecisions, MujocoLib.mjData_* physicsData = null,
+            ActionCurriculum curriculum = null)
         {
             Directory.CreateDirectory(_directory);
 
@@ -65,6 +67,9 @@ namespace Genesis.Sentience.Learning
                 bw => normalizer.Save(bw));
             WriteBinaryTmp(Path.Combine(_directory, REWARD_FILE), 0,
                 bw => reward.Save(bw));
+            if (curriculum != null)
+                WriteBinaryTmp(Path.Combine(_directory, CURRICULUM_FILE), 0,
+                    bw => curriculum.Save(bw));
             if (physicsData != null)
                 WritePhysicsStateTmp(physicsData);
             WriteMetaTmp(agent, buffer, totalDecisions); // commit marker — last
@@ -75,7 +80,8 @@ namespace Genesis.Sentience.Learning
 
         public void SaveWithSnapshot(SACAgent agent, ReplayBuffer buffer,
             ObservationNormalizer normalizer, ContinuingReward reward,
-            int totalDecisions, double[] qpos, double[] qvel, double[] ctrl)
+            int totalDecisions, double[] qpos, double[] qvel, double[] ctrl,
+            ActionCurriculum curriculum = null)
         {
             Directory.CreateDirectory(_directory);
 
@@ -87,6 +93,9 @@ namespace Genesis.Sentience.Learning
                 bw => normalizer.Save(bw));
             WriteBinaryTmp(Path.Combine(_directory, REWARD_FILE), 0,
                 bw => reward.Save(bw));
+            if (curriculum != null)
+                WriteBinaryTmp(Path.Combine(_directory, CURRICULUM_FILE), 0,
+                    bw => curriculum.Save(bw));
             if (qpos != null)
                 WritePhysicsSnapshotTmp(qpos, qvel, ctrl);
             WriteMetaTmp(agent, buffer, totalDecisions); // commit marker — last
@@ -211,7 +220,8 @@ namespace Genesis.Sentience.Learning
         // ─── Load with recovery ─────────────────────────────────────
 
         public void Load(SACAgent agent, ReplayBuffer buffer,
-            ObservationNormalizer normalizer, ContinuingReward reward)
+            ObservationNormalizer normalizer, ContinuingReward reward,
+            ActionCurriculum curriculum = null)
         {
             RecoverFromInterruptedSave();
 
@@ -246,6 +256,21 @@ namespace Genesis.Sentience.Learning
             {
                 using var br = new BinaryReader(File.OpenRead(rewardPath));
                 reward.Load(br);
+            }
+
+            string curriculumPath = Path.Combine(_directory, CURRICULUM_FILE);
+            if (curriculum != null && File.Exists(curriculumPath))
+            {
+                try
+                {
+                    using var br = new BinaryReader(File.OpenRead(curriculumPath));
+                    curriculum.Load(br);
+                    Debug.Log($"StatePersister: Loaded curriculum state — stage {curriculum.CurrentStage}");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"StatePersister: Curriculum load failed ({e.Message}), starting from stage 0");
+                }
             }
 
             Debug.Log($"StatePersister: Loaded state from {_directory} — " +
