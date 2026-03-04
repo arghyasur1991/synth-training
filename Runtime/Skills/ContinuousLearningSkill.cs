@@ -108,11 +108,11 @@ namespace Genesis.Sentience.Learning
         [Header("Assisted Poses")]
         [Tooltip("Periodically teleport to reference clip poses when stuck in Fallen phase. " +
             "Like a parent picking up a baby — gives the agent experience of being upright.")]
-        public bool enableAssistedPoses = false;
+        public bool enableAssistedPoses = true;
 
         [Tooltip("Seconds in Fallen phase before teleporting to a reference pose.")]
         [Range(5f, 300f)]
-        public float assistIntervalSeconds = 300f;
+        public float assistIntervalSeconds = 30f;
 
         [Tooltip("Random noise added to joint angles after teleport (radians). Varies the starting condition.")]
         [Range(0f, 0.1f)]
@@ -122,7 +122,7 @@ namespace Genesis.Sentience.Learning
             "Joint stiffness/damping keeps the synth roughly upright, giving the agent " +
             "several high-reward transitions to learn from.")]
         [Range(0, 600)]
-        public int assistHoldFrames = 600; 
+        public int assistHoldFrames = 150; 
 
         // --- ISynthSkill ---
         public string Name => "ContinuousLearning";
