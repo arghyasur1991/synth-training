@@ -34,7 +34,7 @@ namespace Genesis.Sentience.Learning
     /// </summary>
     public class ContinuingReward
     {
-        private const float FALLEN_Z = 0.15f;
+        private const float FALLEN_Z = 0.25f;
         private const float STANDING_Z = 0.7f;
         private const float TILT_THRESHOLD = 0.707f;
         private const float MOVING_VEL = 0.1f;
