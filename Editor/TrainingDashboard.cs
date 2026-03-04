@@ -7,7 +7,7 @@ namespace Genesis.Sentience.Learning.EditorTools
 {
     public class TrainingDashboard : EditorWindow
     {
-        [MenuItem("Sentience/Training Dashboard")]
+        [MenuItem("Synth/Training Dashboard")]
         static void Open()
         {
             var w = GetWindow<TrainingDashboard>("Training Dashboard");
