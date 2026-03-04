@@ -583,7 +583,7 @@ namespace Genesis.Sentience.Learning
         [UnityEngine.Tooltip("Minimum alpha floor. With 225 dims, even alpha=0.01 " +
             "gives substantial exploration (225 independent noise sources).")]
         [UnityEngine.Range(0.001f, 1.0f)]
-        public float AlphaMin = 0.01f;
+        public float AlphaMin = 0.10f;
 
         [UnityEngine.Header("Exploration")]
 

@@ -54,6 +54,10 @@ namespace Genesis.Sentience.Learning
         private const float W_HAND_BRACE = 0.08f;
         private const float W_ACTIVE_SUPPORT = 0.07f;
         private const float SUPPORT_FORCE_THRESHOLD_FRAC = 0.05f;
+        private const float PROXIMITY_SCALE = 10f;
+        private const float PROXIMITY_WEIGHT = 0.6f;
+        private const float CONTACT_WEIGHT = 0.4f;
+        private const float GROUND_PROXIMITY_THRESHOLD = 0.05f;
 
         private const float PHASE_BONUS_RECOVERING = 0.15f;
         private const float PHASE_BONUS_STANDING = 0.40f;
@@ -359,29 +363,51 @@ namespace Genesis.Sentience.Learning
             // Comfort reward: exponential decay of mean strain.
             float rComfort = Mathf.Exp(-COMFORT_STRAIN_SCALE * meanStrain);
 
-            // Contact-based micro-rewards: provide continuous gradient from fallen to standing
+            // Proximity + contact hybrid rewards: gradient exists even without contact.
+            // Proximity pulls limbs toward the ground; contact force rewards weight-bearing.
             float rFootSupport = 0f;
             float rHandBrace = 0f;
             float rActiveSupport = 0f;
 
             if (contact != null && bodyWeight > 1e-3f)
             {
+                // Foot: proximity (always provides gradient) + contact force bonus
+                float footZ_L = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_FOOT, data);
+                float footZ_R = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_FOOT, data);
+                float footProx = 0.5f * (Mathf.Exp(-PROXIMITY_SCALE * Mathf.Max(0f, footZ_L))
+                                       + Mathf.Exp(-PROXIMITY_SCALE * Mathf.Max(0f, footZ_R)));
+
                 float footDown = contact.GetSupportForce(SynthContact.SLOT_LEFT_FOOT)
                                + contact.GetSupportForce(SynthContact.SLOT_RIGHT_FOOT);
-                rFootSupport = Mathf.Clamp01(footDown / bodyWeight);
+                float footContact = Mathf.Clamp01(footDown / bodyWeight);
+
+                rFootSupport = PROXIMITY_WEIGHT * footProx + CONTACT_WEIGHT * footContact;
+
+                // Hand: same proximity + contact structure
+                float handZ_L = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_HAND, data);
+                float handZ_R = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_HAND, data);
+                float handProx = 0.5f * (Mathf.Exp(-PROXIMITY_SCALE * Mathf.Max(0f, handZ_L))
+                                       + Mathf.Exp(-PROXIMITY_SCALE * Mathf.Max(0f, handZ_R)));
 
                 float handDown = contact.GetSupportForce(SynthContact.SLOT_LEFT_HAND)
                                + contact.GetSupportForce(SynthContact.SLOT_RIGHT_HAND);
-                rHandBrace = Mathf.Clamp01(handDown / (bodyWeight * 0.3f));
+                float handContact = Mathf.Clamp01(handDown / (bodyWeight * 0.3f));
 
+                rHandBrace = PROXIMITY_WEIGHT * handProx + CONTACT_WEIGHT * handContact;
+
+                // Active support: limbs near ground OR bearing weight
                 float threshold = bodyWeight * SUPPORT_FORCE_THRESHOLD_FRAC;
                 int supportCount = 0;
-                if (contact.GetSupportForce(SynthContact.SLOT_LEFT_FOOT) > threshold) supportCount++;
-                if (contact.GetSupportForce(SynthContact.SLOT_RIGHT_FOOT) > threshold) supportCount++;
-                if (contact.GetSupportForce(SynthContact.SLOT_LEFT_HAND) > threshold) supportCount++;
-                if (contact.GetSupportForce(SynthContact.SLOT_RIGHT_HAND) > threshold) supportCount++;
-                if (contact.GetSupportForce(SynthContact.SLOT_LEFT_KNEE) > threshold) supportCount++;
-                if (contact.GetSupportForce(SynthContact.SLOT_RIGHT_KNEE) > threshold) supportCount++;
+                if (footZ_L < GROUND_PROXIMITY_THRESHOLD || contact.GetSupportForce(SynthContact.SLOT_LEFT_FOOT) > threshold) supportCount++;
+                if (footZ_R < GROUND_PROXIMITY_THRESHOLD || contact.GetSupportForce(SynthContact.SLOT_RIGHT_FOOT) > threshold) supportCount++;
+                if (handZ_L < GROUND_PROXIMITY_THRESHOLD || contact.GetSupportForce(SynthContact.SLOT_LEFT_HAND) > threshold) supportCount++;
+                if (handZ_R < GROUND_PROXIMITY_THRESHOLD || contact.GetSupportForce(SynthContact.SLOT_RIGHT_HAND) > threshold) supportCount++;
+
+                float kneeZ_L = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_KNEE, data);
+                float kneeZ_R = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_KNEE, data);
+                if (kneeZ_L < GROUND_PROXIMITY_THRESHOLD || contact.GetSupportForce(SynthContact.SLOT_LEFT_KNEE) > threshold) supportCount++;
+                if (kneeZ_R < GROUND_PROXIMITY_THRESHOLD || contact.GetSupportForce(SynthContact.SLOT_RIGHT_KNEE) > threshold) supportCount++;
+
                 rActiveSupport = Mathf.Clamp01(supportCount / 3f);
             }
 
