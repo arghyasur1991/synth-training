@@ -73,6 +73,10 @@ namespace Genesis.Sentience.Learning
                 var mean = Linear(headHidden, cd);
                 var logStd = Linear(headHidden, cd);
                 _heads.Add((fc, mean, logStd));
+
+                register_module($"head_{i}_fc", fc);
+                register_module($"head_{i}_mean", mean);
+                register_module($"head_{i}_logStd", logStd);
             }
 
             RegisterComponents();

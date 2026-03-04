@@ -204,15 +204,6 @@ namespace Genesis.Sentience.Learning
             return false;
         }
 
-        /// <summary>
-        /// Adjusted target entropy based on active action dimensions.
-        /// Only active joints contribute to the entropy target.
-        /// </summary>
-        public float AdjustedTargetEntropy(float entropyScale)
-        {
-            return -_activeCount * entropyScale;
-        }
-
         private void SetStage(int stage)
         {
             _currentStage = Math.Min(stage, StageBones.Length - 1);
@@ -265,15 +256,19 @@ namespace Genesis.Sentience.Learning
         public void Load(BinaryReader br)
         {
             int stage = br.ReadInt32();
-            _decisionsInStage = br.ReadInt32();
-            _windowFilled = br.ReadInt32();
-            _windowIdx = br.ReadInt32();
+            int savedDecisions = br.ReadInt32();
+            int savedWindowFilled = br.ReadInt32();
+            int savedWindowIdx = br.ReadInt32();
             if (_phaseWindow == null) _phaseWindow = new int[WINDOW_SIZE];
             for (int i = 0; i < WINDOW_SIZE; i++)
                 _phaseWindow[i] = br.ReadInt32();
 
             if (_activeMask != null)
                 SetStage(stage);
+
+            _decisionsInStage = savedDecisions;
+            _windowFilled = savedWindowFilled;
+            _windowIdx = savedWindowIdx;
         }
     }
 }

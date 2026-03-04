@@ -371,6 +371,9 @@ namespace Genesis.Sentience.Learning
                             Debug.Log("ContinuousLearningSkill: Physics state restored");
                         }
 
+                        if (enableCurriculum && _curriculum != null)
+                            _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
+
                         Debug.Log($"ContinuousLearningSkill: Restored state — " +
                                   $"{_totalDecisions} decisions, {_replayBuffer.Count} replay entries");
                     }
