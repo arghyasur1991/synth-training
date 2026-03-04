@@ -34,7 +34,7 @@ namespace Genesis.Sentience.Learning
     /// </summary>
     public class ContinuingReward
     {
-        private const float FALLEN_Z = 0.3f;
+        private const float FALLEN_Z = 0.15f;
         private const float STANDING_Z = 0.7f;
         private const float TILT_THRESHOLD = 0.707f;
         private const float MOVING_VEL = 0.1f;
@@ -352,11 +352,12 @@ namespace Genesis.Sentience.Learning
             float imitationWeight = W_IMITATION * effectiveImitBlend;
             float velocityWeight = W_VELOCITY_UP * (1f - standBlend);
 
-            // Orientation only matters when rising — when fallen, any rotation
-            // (including going prone) must be free to explore recovery strategies.
-            // Freed weight goes to height + velocity when on the ground.
-            float orientWeight = W_ORIENTATION * standBlend;
-            float freedWeight = W_ORIENTATION * (1f - standBlend);
+            // Orientation always partially active — being upright while sitting/crouching
+            // is progress worth rewarding. Minimum 30% weight even when fallen.
+            const float MIN_ORIENT_BLEND = 0.3f;
+            float effectiveOrientBlend = Mathf.Max(standBlend, MIN_ORIENT_BLEND);
+            float orientWeight = W_ORIENTATION * effectiveOrientBlend;
+            float freedWeight = W_ORIENTATION * (1f - effectiveOrientBlend);
             float heightBoost = freedWeight * 0.6f;
             float velBoost = freedWeight * 0.4f;
 
