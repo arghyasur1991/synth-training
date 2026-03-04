@@ -412,9 +412,21 @@ namespace Genesis.Sentience.Learning
                 rActiveSupport = Mathf.Clamp01(supportCount / 3f);
             }
 
-            float footSupportWeight = W_FOOT_SUPPORT;
-            float handBraceWeight = W_HAND_BRACE * (1f - standBlend);
-            float activeSupportWeight = W_ACTIVE_SUPPORT * (1f - standBlend);
+            // Phase-aware weight rebalancing: when fallen, contact/comfort are near-constant
+            // (everything is on the ground) and drown out the gradient signals (height, orient).
+            // risingBlend ramps from 0 (flat) to 1 (early recovery), gating the constants.
+            float risingBlend = Mathf.Clamp01(standBlend * 3f);
+            float fallenEmphasis = 1f - risingBlend;
+
+            // Contact/comfort: suppress when fallen (constant, no gradient), restore during recovery
+            float footSupportWeight = W_FOOT_SUPPORT * Mathf.Lerp(0.15f, 1f, risingBlend);
+            float handBraceWeight = W_HAND_BRACE * risingBlend;
+            float activeSupportWeight = W_ACTIVE_SUPPORT * risingBlend;
+            float comfortWeight = W_COMFORT * Mathf.Lerp(0.2f, 1f, risingBlend);
+
+            // Height + orientation: amplify when fallen (these carry the actual gradient)
+            float heightEmphasis = 1f + 1.5f * fallenEmphasis;
+            float orientEmphasis = 1f + 1.5f * fallenEmphasis;
 
             float phaseBonus = phase switch
             {
@@ -424,14 +436,17 @@ namespace Genesis.Sentience.Learning
                 _                     => 0f
             };
 
+            float heightFinal = (W_HEIGHT + heightBoost) * heightEmphasis;
+            float orientFinal = orientWeight * orientEmphasis;
+
             float rawReward = W_ALIVE * rAlive
-                            + (W_HEIGHT + heightBoost) * rHeight
-                            + orientWeight * rOrientation
+                            + heightFinal * rHeight
+                            + orientFinal * rOrientation
                             + energyWeight * rEnergy
                             + recoveryWeight * rRecovery
                             + imitationWeight * rImitation
                             + (velocityWeight + velBoost) * rVelocityUp
-                            + W_COMFORT * rComfort
+                            + comfortWeight * rComfort
                             + footSupportWeight * rFootSupport
                             + handBraceWeight * rHandBrace
                             + activeSupportWeight * rActiveSupport
@@ -440,13 +455,13 @@ namespace Genesis.Sentience.Learning
             _lastRawReward = rawReward;
 
             _lastSnapshot.Alive = W_ALIVE * rAlive;
-            _lastSnapshot.Height = (W_HEIGHT + heightBoost) * rHeight;
-            _lastSnapshot.Orientation = orientWeight * rOrientation;
+            _lastSnapshot.Height = heightFinal * rHeight;
+            _lastSnapshot.Orientation = orientFinal * rOrientation;
             _lastSnapshot.Energy = energyWeight * rEnergy;
             _lastSnapshot.Recovery = recoveryWeight * rRecovery;
             _lastSnapshot.Imitation = imitationWeight * rImitation;
             _lastSnapshot.VelocityUp = (velocityWeight + velBoost) * rVelocityUp;
-            _lastSnapshot.Comfort = W_COMFORT * rComfort;
+            _lastSnapshot.Comfort = comfortWeight * rComfort;
             _lastSnapshot.FootSupport = footSupportWeight * rFootSupport;
             _lastSnapshot.HandBrace = handBraceWeight * rHandBrace;
             _lastSnapshot.ActiveSupport = activeSupportWeight * rActiveSupport;
