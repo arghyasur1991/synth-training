@@ -8,6 +8,8 @@ On-device reinforcement learning for Synth humanoids using [TorchSharp](https://
 - **Platform-Adaptive** — macOS (Metal/MPS), Android/Quest (CPU), Windows (CPU). Training thread auto-throttles based on platform capabilities.
 - **Prioritized Experience Replay** — PER with importance sampling and beta annealing for sample-efficient learning.
 - **Continuous Learning** — `ContinuousLearningSkill` implements `ISynthSkill` for persistent, always-on training with phase-based reward shaping.
+- **Progressive Action Curriculum** — Unlock joints in stages as the agent improves, with automatic target entropy adjustment.
+- **Live Training Dashboard** — Editor window (`Sentience/Training Dashboard`) with real-time graphs for reward components, losses, alpha, phase timeline, and performance metrics.
 - **Motion Reference Tooling** — Extract reference motion from AnimationClips, play back on non-MuJoCo characters, and visually validate motion extraction pipelines.
 - **Atomic State Persistence** — Crash-safe save/load with temporary file and atomic rename. Survives interrupted writes.
 - **IL2CPP Compatible** — Custom bridge for TorchSharp on IL2CPP (Quest/Android). Static forward-slot pool avoids marshalling issues.
@@ -75,16 +77,19 @@ The managed `TorchSharp.dll` is deployed to `Assets/Packages/TorchSharp/`.
 synth-training/
 ├── Runtime/
 │   ├── Skills/            ContinuousLearningSkill
-│   ├── Agent/             SACAgent, SACConfig, SoftQNetwork
+│   ├── Agent/             SACAgent, SACConfig, SoftQNetwork, StructuredActorNetwork
 │   ├── Training/          TrainingThread, ReplayBuffer
-│   ├── Reward/            ContinuingReward
+│   ├── Reward/            ContinuingReward (multi-phase, contact, proximity)
+│   ├── Curriculum/        ActionCurriculum (progressive joint unlocking)
+│   ├── Diagnostics/       TrainingMetrics, MetricRingBuffer
 │   ├── Observation/       ObservationNormalizer
 │   ├── Persistence/       StatePersister
 │   ├── MotionReference/   MotionClipExtractor, MotionReferenceData,
 │   │                      ReferenceAnimationPlayer, MotionExtractionTestBench
 │   └── Utility/           LearningLogger, TorchSharpLoader
 ├── Editor/
-│   └── ContinuousLearningSkillEditor.cs
+│   ├── ContinuousLearningSkillEditor.cs
+│   └── TrainingDashboard.cs
 ├── scripts/
 │   ├── setup_torchsharp_macos.sh
 │   └── setup_torchsharp_android.sh
@@ -105,7 +110,6 @@ synth-training/
 - **Better continuous learning** — Improved reward shaping, locomotion emergence, homeostatic regulation, and phase progression beyond standing recovery
 - **Imitation learning** — Learn from motion capture clips using adversarial or tracking-based reward
 - **PPO support** — Proximal Policy Optimization as an alternative to SAC for on-policy training
-- **Curriculum learning** — Automatic difficulty scaling (terrain, task complexity) as the agent improves
 - **Multi-agent training** — Train multiple Synths in parallel within a single Unity scene
 - **Reward designer** — Visual editor for composing reward functions from observation primitives
 
