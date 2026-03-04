@@ -29,15 +29,20 @@ namespace Genesis.Sentience.Learning
         private const float MOVING_VEL = 0.1f;
 
         private const float W_ALIVE = 0.05f;
-        private const float W_HEIGHT = 0.25f;
-        private const float W_ORIENTATION = 0.18f;
+        private const float W_HEIGHT = 0.20f;
+        private const float W_ORIENTATION = 0.15f;
         private const float W_ENERGY = 0.03f;
         private const float W_ENERGY_FALLEN = 0.01f;
         private const float W_RECOVERY = 0.10f;
-        private const float W_IMITATION = 0.15f;
-        private const float W_VELOCITY_UP = 0.14f;
+        private const float W_IMITATION = 0.12f;
+        private const float W_VELOCITY_UP = 0.10f;
         private const float W_COMFORT = 0.10f;
         private const float COMFORT_STRAIN_SCALE = 2f;
+
+        private const float W_FOOT_SUPPORT = 0.15f;
+        private const float W_HAND_BRACE = 0.08f;
+        private const float W_ACTIVE_SUPPORT = 0.07f;
+        private const float SUPPORT_FORCE_THRESHOLD_FRAC = 0.05f;
 
         private const float PHASE_BONUS_RECOVERING = 0.15f;
         private const float PHASE_BONUS_STANDING = 0.40f;
@@ -218,7 +223,7 @@ namespace Genesis.Sentience.Learning
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe float Compute(MujocoLib.mjData_* data, MujocoLib.mjModel_* model)
         {
-            return Compute(data, model, 0f);
+            return Compute(data, model, 0f, null, 0f);
         }
 
         /// <summary>
@@ -226,6 +231,16 @@ namespace Genesis.Sentience.Learning
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe float Compute(MujocoLib.mjData_* data, MujocoLib.mjModel_* model, float meanStrain)
+        {
+            return Compute(data, model, meanStrain, null, 0f);
+        }
+
+        /// <summary>
+        /// Full reward computation with contact-based micro-rewards for recovery learning.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe float Compute(MujocoLib.mjData_* data, MujocoLib.mjModel_* model,
+            float meanStrain, SynthContact contact, float bodyWeight)
         {
             double* pQpos = data->qpos;
             double* pQvel = data->qvel;
@@ -329,10 +344,37 @@ namespace Genesis.Sentience.Learning
             float velBoost = freedWeight * 0.4f;
 
             // Comfort reward: exponential decay of mean strain.
-            // r_comfort = 1.0 when strain is zero (perfectly comfortable),
-            // decays toward 0 as strain increases (joints approaching limits,
-            // unnatural postures). Provides gradient toward natural movement.
             float rComfort = Mathf.Exp(-COMFORT_STRAIN_SCALE * meanStrain);
+
+            // Contact-based micro-rewards: provide continuous gradient from fallen to standing
+            float rFootSupport = 0f;
+            float rHandBrace = 0f;
+            float rActiveSupport = 0f;
+
+            if (contact != null && bodyWeight > 1e-3f)
+            {
+                float footDown = contact.GetSupportForce(SynthContact.SLOT_LEFT_FOOT)
+                               + contact.GetSupportForce(SynthContact.SLOT_RIGHT_FOOT);
+                rFootSupport = Mathf.Clamp01(footDown / bodyWeight);
+
+                float handDown = contact.GetSupportForce(SynthContact.SLOT_LEFT_HAND)
+                               + contact.GetSupportForce(SynthContact.SLOT_RIGHT_HAND);
+                rHandBrace = Mathf.Clamp01(handDown / (bodyWeight * 0.3f));
+
+                float threshold = bodyWeight * SUPPORT_FORCE_THRESHOLD_FRAC;
+                int supportCount = 0;
+                if (contact.GetSupportForce(SynthContact.SLOT_LEFT_FOOT) > threshold) supportCount++;
+                if (contact.GetSupportForce(SynthContact.SLOT_RIGHT_FOOT) > threshold) supportCount++;
+                if (contact.GetSupportForce(SynthContact.SLOT_LEFT_HAND) > threshold) supportCount++;
+                if (contact.GetSupportForce(SynthContact.SLOT_RIGHT_HAND) > threshold) supportCount++;
+                if (contact.GetSupportForce(SynthContact.SLOT_LEFT_KNEE) > threshold) supportCount++;
+                if (contact.GetSupportForce(SynthContact.SLOT_RIGHT_KNEE) > threshold) supportCount++;
+                rActiveSupport = Mathf.Clamp01(supportCount / 3f);
+            }
+
+            float footSupportWeight = W_FOOT_SUPPORT;
+            float handBraceWeight = W_HAND_BRACE * (1f - standBlend);
+            float activeSupportWeight = W_ACTIVE_SUPPORT * (1f - standBlend);
 
             float phaseBonus = phase switch
             {
@@ -350,6 +392,9 @@ namespace Genesis.Sentience.Learning
                             + imitationWeight * rImitation
                             + (velocityWeight + velBoost) * rVelocityUp
                             + W_COMFORT * rComfort
+                            + footSupportWeight * rFootSupport
+                            + handBraceWeight * rHandBrace
+                            + activeSupportWeight * rActiveSupport
                             + phaseBonus;
 
             _lastRawReward = rawReward;

@@ -134,6 +134,8 @@ namespace Genesis.Sentience.Learning
         private bool _isMobile;
 
         private SynthProprioception _proprioSense;
+        private SynthContact _contact;
+        private float _bodyWeight;
         private BoneFilterConfig _filter;
 
         private SACAgent _agent;
@@ -278,6 +280,27 @@ namespace Genesis.Sentience.Learning
                     _filter.nbody);
                 _reward.SetNearestFrameInterval(nearestFrameInterval);
 
+                _contact = GetComponent<SynthContact>();
+                if (_contact == null) _contact = GetComponentInParent<SynthContact>();
+                if (_contact == null) _contact = GetComponentInChildren<SynthContact>(true);
+
+                if (_contact != null)
+                {
+                    var mjModel = MjScene.Instance.Model;
+                    int nb = (int)mjModel->nbody;
+                    double totalMass = 0;
+                    for (int i = 0; i < nb; i++)
+                        totalMass += mjModel->body_mass[i];
+                    _bodyWeight = (float)(totalMass * 9.81);
+                    Debug.Log($"ContinuousLearningSkill: Contact rewards enabled — " +
+                        $"bodyWeight={_bodyWeight:F1}N ({totalMass:F2}kg)");
+                }
+                else
+                {
+                    Debug.LogWarning("ContinuousLearningSkill: No SynthContact found — " +
+                        "contact-based micro-rewards disabled");
+                }
+
                 long msReward = sw.ElapsedMilliseconds;
 
                 if (referenceClips != null && referenceClips.Length > 0)
@@ -414,7 +437,8 @@ namespace Genesis.Sentience.Learning
             if (_hasPrevTransition)
             {
                 float meanStrain = _proprioSense.Strain?.MeanStrain() ?? 0f;
-                float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model, meanStrain) * rewardScale;
+                float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
+                    meanStrain, _contact, _bodyWeight) * rewardScale;
                 _replayBuffer.Add(_prevObs, _prevAction, reward, _normalizedObs);
             }
 
