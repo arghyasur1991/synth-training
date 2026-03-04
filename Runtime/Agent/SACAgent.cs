@@ -146,6 +146,12 @@ namespace Genesis.Sentience.Learning
 
         private readonly float[] _actionBuffer;
 
+        // Ornstein-Uhlenbeck noise state for correlated exploration
+        private readonly float[] _ouState;
+        private readonly float _ouTheta;
+        private readonly float _ouSigma;
+        private readonly bool _useCorrelatedNoise;
+
         // Pre-allocated inference tensor: avoids creating a new C# Tensor wrapper per call.
         // Lives outside any DisposeScope so it persists across calls.
         private Tensor _infObsTensor;
@@ -210,6 +216,11 @@ namespace Genesis.Sentience.Learning
             _actionBuffer = new float[actDim];
             _infObsTensor = torch.zeros(1, obsDim, dtype: ScalarType.Float32);
             _infObsBytes = obsDim * sizeof(float);
+
+            _useCorrelatedNoise = config.CorrelatedNoise;
+            _ouTheta = config.OUTheta;
+            _ouSigma = config.OUSigma;
+            _ouState = new float[actDim];
         }
 
         private static System.Collections.Generic.IEnumerable<Parameter> ConcatParams(
@@ -255,8 +266,23 @@ namespace Genesis.Sentience.Learning
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float[] GetRandomAction(Random rng)
         {
-            for (int i = 0; i < ActDim; i++)
-                _actionBuffer[i] = (float)(rng.NextDouble() * 2.0 - 1.0) * _actionScale;
+            if (_useCorrelatedNoise)
+            {
+                // Ornstein-Uhlenbeck process: produces temporally-correlated noise
+                // that generates smoother, more physically meaningful torque patterns.
+                for (int i = 0; i < ActDim; i++)
+                {
+                    float noise = (float)(rng.NextDouble() * 2.0 - 1.0) * 1.732f; // uniform → ~std=1
+                    _ouState[i] += _ouTheta * (0f - _ouState[i]) + _ouSigma * noise;
+                    float clamped = _ouState[i] > 1f ? 1f : (_ouState[i] < -1f ? -1f : _ouState[i]);
+                    _actionBuffer[i] = clamped * _actionScale;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < ActDim; i++)
+                    _actionBuffer[i] = (float)(rng.NextDouble() * 2.0 - 1.0) * _actionScale;
+            }
             return _actionBuffer;
         }
 
@@ -509,14 +535,14 @@ namespace Genesis.Sentience.Learning
         public float PolicyLr = 3e-4f;
         public float QLr = 3e-4f;
         public int PolicyFrequency = 2;
-        public int Hidden1 = 512;
+        public int Hidden1 = 1024;
         public int Hidden2 = 512;
         public int WeightSyncFrequency = 100;
 
-        [UnityEngine.Tooltip("Target entropy = -actDim * scale. With 225-dim actions, logprob is naturally ~-400. " +
-            "Scale 0.1 → target -22.5 keeps exploration alive without drowning the reward signal.")]
+        [UnityEngine.Tooltip("Target entropy = -actDim * scale. Higher values encourage more exploration, " +
+            "critical for high-dimensional action spaces. 0.3 recommended for ~90 DOF bodies.")]
         [UnityEngine.Range(0.01f, 1f)]
-        public float TargetEntropyScale = 0.1f;
+        public float TargetEntropyScale = 0.3f;
 
         [UnityEngine.Tooltip("Hard ceiling on Q-target magnitude. Safety net only — " +
             "target smoothing is the primary overestimation defense. " +
@@ -547,6 +573,21 @@ namespace Genesis.Sentience.Learning
             "gives substantial exploration (225 independent noise sources).")]
         [UnityEngine.Range(0.001f, 1.0f)]
         public float AlphaMin = 0.01f;
+
+        [UnityEngine.Header("Exploration")]
+
+        [UnityEngine.Tooltip("Use temporally-correlated (Ornstein-Uhlenbeck) noise instead of " +
+            "independent Gaussian. Produces smoother, more physically meaningful torque patterns " +
+            "in high-dimensional action spaces.")]
+        public bool CorrelatedNoise = true;
+
+        [UnityEngine.Tooltip("OU noise mean reversion rate (theta). Higher = faster reversion to zero.")]
+        [UnityEngine.Range(0.01f, 1f)]
+        public float OUTheta = 0.15f;
+
+        [UnityEngine.Tooltip("OU noise diffusion scale (sigma). Higher = more exploration variance.")]
+        [UnityEngine.Range(0.01f, 1f)]
+        public float OUSigma = 0.3f;
 
         [UnityEngine.Header("Prioritized Experience Replay")]
 

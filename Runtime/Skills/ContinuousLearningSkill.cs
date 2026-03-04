@@ -100,6 +100,10 @@ namespace Genesis.Sentience.Learning
         [Tooltip("Delete all saved state on next Play. Use when model architecture changes. Auto-resets after deletion.")]
         public bool deleteSavesOnStart;
 
+        [Header("Action Curriculum")]
+        [Tooltip("Enable progressive action curriculum — unlock joints in stages as competency grows")]
+        public bool enableCurriculum = true;
+
         [Header("Assisted Poses")]
         [Tooltip("Periodically teleport to reference clip poses when stuck in Fallen phase. " +
             "Like a parent picking up a baby — gives the agent experience of being upright.")]
@@ -138,6 +142,7 @@ namespace Genesis.Sentience.Learning
         private ObservationNormalizer _obsNormalizer;
         private TrainingThread _trainingThread;
         private StatePersister _persister;
+        private ActionCurriculum _curriculum;
 
         // Pre-allocated buffers (zero-allocation Act() hot path)
         private float[] _normalizedObs;
@@ -186,6 +191,8 @@ namespace Genesis.Sentience.Learning
         public int AssistCount => _assistCount;
         public float FallenTimer => _fallenTimer;
         public int AssistHoldRemaining => _assistHoldRemaining;
+        public int CurriculumStage => _curriculum?.CurrentStage ?? -1;
+        public int CurriculumActiveJoints => _curriculum?.ActiveActionDim ?? 0;
 
         public unsafe bool Initialize()
         {
@@ -280,6 +287,15 @@ namespace Genesis.Sentience.Learning
 
                 _zeroAction = new float[actDim];
 
+                // Initialize progressive action curriculum
+                if (enableCurriculum)
+                {
+                    _curriculum = new ActionCurriculum();
+                    var entity = GetComponent<SynthEntity>() ?? GetComponentInParent<SynthEntity>();
+                    var boneMapper = entity?.BoneMapper;
+                    _curriculum.Initialize(MjScene.Instance.Model, _filter, boneMapper);
+                }
+
                 int nqInit = (int)MjScene.Instance.Model->nq;
                 _standingQpos = new double[nqInit];
                 for (int i = 0; i < nqInit; i++) _standingQpos[i] = MjScene.Instance.Data->qpos[i];
@@ -303,7 +319,7 @@ namespace Genesis.Sentience.Learning
                 {
                     try
                     {
-                        _persister.Load(_agent, _replayBuffer, _obsNormalizer, _reward);
+                        _persister.Load(_agent, _replayBuffer, _obsNormalizer, _reward, _curriculum);
                         _totalDecisions = _persister.LoadedDecisionCount;
 
                         if (_persister.LoadPhysicsState(MjScene.Instance.Data))
@@ -396,7 +412,8 @@ namespace Genesis.Sentience.Learning
             // Store previous transition
             if (_hasPrevTransition)
             {
-                float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model) * rewardScale;
+                float meanStrain = _proprioSense.Strain?.MeanStrain() ?? 0f;
+                float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model, meanStrain) * rewardScale;
                 _replayBuffer.Add(_prevObs, _prevAction, reward, _normalizedObs);
             }
 
@@ -442,6 +459,13 @@ namespace Genesis.Sentience.Learning
                 rawAction = _agent.GetRandomAction(_rng);
             else
                 rawAction = _agent.GetAction(_normalizedObs);
+
+            // Apply curriculum mask (zero out inactive joints)
+            _curriculum?.MaskActions(rawAction);
+
+            // Step curriculum and check for stage advancement
+            if (_curriculum != null && _reward != null)
+                _curriculum.Step(_reward.LastPhase);
 
             // Exponential action smoothing: prevents chaotic torque oscillation
             float a = actionSmoothingAlpha;
@@ -724,7 +748,7 @@ namespace Genesis.Sentience.Learning
                 try
                 {
                     _persister.SaveWithSnapshot(_agent, _replayBuffer, _obsNormalizer,
-                        _reward, decisions, qposSnap, qvelSnap, ctrlSnap);
+                        _reward, decisions, qposSnap, qvelSnap, ctrlSnap, _curriculum);
                 }
                 catch (Exception e)
                 {
@@ -815,7 +839,7 @@ namespace Genesis.Sentience.Learning
                     try
                     {
                         _persister.SaveWithSnapshot(_agent, _replayBuffer, _obsNormalizer,
-                            _reward, decisions, qposSnap, qvelSnap, ctrlSnap);
+                            _reward, decisions, qposSnap, qvelSnap, ctrlSnap, _curriculum);
                         Debug.Log($"ContinuousLearningSkill: Quit save complete — {decisions} decisions");
                     }
                     catch (Exception e)

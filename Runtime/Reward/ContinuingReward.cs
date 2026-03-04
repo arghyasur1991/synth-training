@@ -29,13 +29,15 @@ namespace Genesis.Sentience.Learning
         private const float MOVING_VEL = 0.1f;
 
         private const float W_ALIVE = 0.05f;
-        private const float W_HEIGHT = 0.30f;
-        private const float W_ORIENTATION = 0.20f;
-        private const float W_ENERGY = 0.05f;
+        private const float W_HEIGHT = 0.25f;
+        private const float W_ORIENTATION = 0.18f;
+        private const float W_ENERGY = 0.03f;
         private const float W_ENERGY_FALLEN = 0.01f;
         private const float W_RECOVERY = 0.10f;
         private const float W_IMITATION = 0.15f;
-        private const float W_VELOCITY_UP = 0.15f;
+        private const float W_VELOCITY_UP = 0.14f;
+        private const float W_COMFORT = 0.10f;
+        private const float COMFORT_STRAIN_SCALE = 2f;
 
         private const float PHASE_BONUS_RECOVERING = 0.15f;
         private const float PHASE_BONUS_STANDING = 0.40f;
@@ -210,8 +212,20 @@ namespace Genesis.Sentience.Learning
             return true;
         }
 
+        /// <summary>
+        /// Compute the continuing reward. Overload without strain (backward compat).
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe float Compute(MujocoLib.mjData_* data, MujocoLib.mjModel_* model)
+        {
+            return Compute(data, model, 0f);
+        }
+
+        /// <summary>
+        /// Compute the continuing reward with proprioceptive strain/comfort component.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe float Compute(MujocoLib.mjData_* data, MujocoLib.mjModel_* model, float meanStrain)
         {
             double* pQpos = data->qpos;
             double* pQvel = data->qvel;
@@ -314,6 +328,12 @@ namespace Genesis.Sentience.Learning
             float heightBoost = freedWeight * 0.6f;
             float velBoost = freedWeight * 0.4f;
 
+            // Comfort reward: exponential decay of mean strain.
+            // r_comfort = 1.0 when strain is zero (perfectly comfortable),
+            // decays toward 0 as strain increases (joints approaching limits,
+            // unnatural postures). Provides gradient toward natural movement.
+            float rComfort = Mathf.Exp(-COMFORT_STRAIN_SCALE * meanStrain);
+
             float phaseBonus = phase switch
             {
                 AgentPhase.Recovering => PHASE_BONUS_RECOVERING,
@@ -329,6 +349,7 @@ namespace Genesis.Sentience.Learning
                             + recoveryWeight * rRecovery
                             + imitationWeight * rImitation
                             + (velocityWeight + velBoost) * rVelocityUp
+                            + W_COMFORT * rComfort
                             + phaseBonus;
 
             _lastRawReward = rawReward;
