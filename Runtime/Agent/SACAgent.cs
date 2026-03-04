@@ -197,7 +197,7 @@ namespace Genesis.Sentience.Learning
             CopyWeights(QF1, QF1Target);
             CopyWeights(QF2, QF2Target);
 
-            float initAlpha = Math.Max(config.AlphaMin, 0.01f);
+            float initAlpha = Math.Max(config.AlphaInit, config.AlphaMin);
             _logAlpha = new Parameter(torch.tensor((float)Math.Log(initAlpha), device: device).unsqueeze(0));
 
             _qOptimizer = optim.Adam(ConcatParams(QF1, QF2), lr: config.QLr);
@@ -569,7 +569,12 @@ namespace Genesis.Sentience.Learning
             "Match to the actuator ctrl range so the full tanh range is useful.")]
         public float ActionScale = 0.4f;
 
-        [UnityEngine.Tooltip("Minimum alpha (entropy temperature). With 225 dims, even alpha=0.01 " +
+        [UnityEngine.Tooltip("Initial alpha (entropy temperature). Higher values encourage more " +
+            "exploration early on. Auto-tuning adjusts it toward target entropy.")]
+        [UnityEngine.Range(0.01f, 2.0f)]
+        public float AlphaInit = 1.0f;
+
+        [UnityEngine.Tooltip("Minimum alpha floor. With 225 dims, even alpha=0.01 " +
             "gives substantial exploration (225 independent noise sources).")]
         [UnityEngine.Range(0.001f, 1.0f)]
         public float AlphaMin = 0.01f;
