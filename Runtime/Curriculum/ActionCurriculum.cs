@@ -104,14 +104,14 @@ namespace Genesis.Sentience.Learning
             }
 
             // Build bone → actuator index mapping.
-            // Each bone's MjBody has child MjActuator components. Their MujocoId
-            // is the global actuator index. We map that to the filter's included
-            // actuator position (the action vector index).
+            // Actuators are flat children of the actuator root, named "{boneName}Joint{X|Y|Z}".
+            // We match by checking if the actuator's name starts with the bone transform's name.
             var globalToLocal = new Dictionary<int, int>();
             for (int i = 0; i < filter.includedActuatorIdx.Length; i++)
                 globalToLocal[filter.includedActuatorIdx[i]] = i;
 
-            var allActuators = UnityEngine.Object.FindObjectsByType<MjActuator>(FindObjectsSortMode.None);
+            var allActuators = UnityEngine.Object.FindObjectsByType<MjActuator>(
+                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
 
             foreach (SynthBone bone in Enum.GetValues(typeof(SynthBone)))
             {
@@ -119,10 +119,12 @@ namespace Genesis.Sentience.Learning
                 var t = boneMapper.GetTransform(bone);
                 if (t == null) continue;
 
+                string boneName = t.name;
                 var actuators = new List<int>();
                 foreach (var act in allActuators)
                 {
-                    if (IsActuatorForBone(act.transform, t) &&
+                    if (act.name.StartsWith(boneName) &&
+                        act.name.Contains("Joint") &&
                         globalToLocal.TryGetValue(act.MujocoId, out int localIdx))
                     {
                         actuators.Add(localIdx);
@@ -142,8 +144,8 @@ namespace Genesis.Sentience.Learning
 
             if (totalMapped == 0)
             {
-                Debug.LogWarning("ActionCurriculum: Zero actuators mapped to bones — " +
-                    "activating all joints to avoid frozen synth");
+                Debug.LogWarning("ActionCurriculum: Zero actuators mapped — " +
+                    "activating all joints (check bone names vs actuator names)");
                 SetStage(StageBones.Length - 1);
                 return;
             }
@@ -156,21 +158,6 @@ namespace Genesis.Sentience.Learning
                     "activating all joints as fallback");
                 SetStage(StageBones.Length - 1);
             }
-        }
-
-        /// <summary>
-        /// Check if an MjActuator belongs to a bone by checking if its transform
-        /// is a child (or the same as) the bone transform.
-        /// </summary>
-        private static bool IsActuatorForBone(Transform actuatorTransform, Transform boneTransform)
-        {
-            var t = actuatorTransform;
-            while (t != null)
-            {
-                if (t == boneTransform) return true;
-                t = t.parent;
-            }
-            return false;
         }
 
         /// <summary>

@@ -101,9 +101,8 @@ namespace Genesis.Sentience.Learning
         public bool deleteSavesOnStart;
 
         [Header("Action Curriculum")]
-        [Tooltip("Enable progressive action curriculum — unlock joints in stages as competency grows. " +
-            "Experimental: disable if actions appear to be zeroed.")]
-        public bool enableCurriculum = false;
+        [Tooltip("Enable progressive action curriculum — unlock joints in stages as competency grows")]
+        public bool enableCurriculum = true;
 
         [Header("Assisted Poses")]
         [Tooltip("Periodically teleport to reference clip poses when stuck in Fallen phase. " +
