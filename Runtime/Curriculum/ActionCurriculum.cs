@@ -140,7 +140,22 @@ namespace Genesis.Sentience.Learning
             Debug.Log($"ActionCurriculum: Mapped {totalMapped}/{_totalActDim} actuators " +
                       $"to {_boneActuatorMap.Count} bones");
 
+            if (totalMapped == 0)
+            {
+                Debug.LogWarning("ActionCurriculum: Zero actuators mapped to bones — " +
+                    "activating all joints to avoid frozen synth");
+                SetStage(StageBones.Length - 1);
+                return;
+            }
+
             SetStage(0);
+
+            if (_activeCount == 0)
+            {
+                Debug.LogWarning("ActionCurriculum: Stage 0 has zero active actuators — " +
+                    "activating all joints as fallback");
+                SetStage(StageBones.Length - 1);
+            }
         }
 
         /// <summary>
