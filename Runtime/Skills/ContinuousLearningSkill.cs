@@ -107,7 +107,7 @@ namespace Genesis.Sentience.Learning
         [Header("Assisted Poses")]
         [Tooltip("Periodically teleport to reference clip poses when stuck in Fallen phase. " +
             "Like a parent picking up a baby — gives the agent experience of being upright.")]
-        public bool enableAssistedPoses = true;
+        public bool enableAssistedPoses = false;
 
         [Tooltip("Seconds in Fallen phase before teleporting to a reference pose.")]
         [Range(5f, 300f)]
@@ -294,6 +294,7 @@ namespace Genesis.Sentience.Learning
                     var entity = GetComponent<SynthEntity>() ?? GetComponentInParent<SynthEntity>();
                     var boneMapper = entity?.BoneMapper;
                     _curriculum.Initialize(MjScene.Instance.Model, _filter, boneMapper);
+                    _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
                 }
 
                 int nqInit = (int)MjScene.Instance.Model->nq;
@@ -465,7 +466,10 @@ namespace Genesis.Sentience.Learning
 
             // Step curriculum and check for stage advancement
             if (_curriculum != null && _reward != null)
-                _curriculum.Step(_reward.LastPhase);
+            {
+                if (_curriculum.Step(_reward.LastPhase))
+                    _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
+            }
 
             // Exponential action smoothing: prevents chaotic torque oscillation
             float a = actionSmoothingAlpha;

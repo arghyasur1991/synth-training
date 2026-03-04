@@ -12,10 +12,10 @@ namespace Genesis.Sentience.Learning
     /// demonstrates competency. Inactive joints receive ctrl=0 (passive, spring-damped).
     ///
     /// Stages:
-    ///   0 — Core locomotion: hips, upper legs, lower legs, spine, feet (~18 DOF)
-    ///   1 — Upper body: + shoulders, upper/lower arms, chest, neck (~36 DOF)
-    ///   2 — Fine motor: + hands, head, toes, upper chest (~60 DOF)
-    ///   3 — Full body: all remaining joints (~90 DOF)
+    ///   0 — Full locomotion: hips, spine, chest, legs, feet, shoulders, arms, neck (~54 DOF)
+    ///       Arms are essential for balance — humans use their whole body, not just legs.
+    ///   1 — Fine motor: + hands, head, toes, upper chest, jaw (~72 DOF)
+    ///   2 — Full body: all remaining joints (~90 DOF)
     ///
     /// The actor network keeps its full output dimension at all times — inactive
     /// actions are simply zeroed before applying to the simulation. This avoids
@@ -30,25 +30,21 @@ namespace Genesis.Sentience.Learning
     {
         private static readonly SynthBone[][] StageBones = new SynthBone[][]
         {
-            // Stage 0: Core locomotion
+            // Stage 0: Full locomotion — whole torso + limbs (arms needed for balance)
             new[] {
-                SynthBone.Hips, SynthBone.Spine,
+                SynthBone.Hips, SynthBone.Spine, SynthBone.Chest, SynthBone.Neck,
                 SynthBone.LeftUpperLeg, SynthBone.LeftLowerLeg, SynthBone.LeftFoot,
                 SynthBone.RightUpperLeg, SynthBone.RightLowerLeg, SynthBone.RightFoot,
-            },
-            // Stage 1: Arms + upper body
-            new[] {
-                SynthBone.Chest, SynthBone.Neck,
                 SynthBone.LeftShoulder, SynthBone.LeftUpperArm, SynthBone.LeftLowerArm,
                 SynthBone.RightShoulder, SynthBone.RightUpperArm, SynthBone.RightLowerArm,
             },
-            // Stage 2: Fine motor
+            // Stage 1: Fine motor
             new[] {
                 SynthBone.UpperChest, SynthBone.Head, SynthBone.Jaw,
                 SynthBone.LeftHand, SynthBone.RightHand,
                 SynthBone.LeftToes, SynthBone.RightToes,
             },
-            // Stage 3: Auxiliary (everything else)
+            // Stage 2: Auxiliary (everything else)
             new[] {
                 SynthBone.LeftEye, SynthBone.RightEye,
                 SynthBone.LeftPectoral, SynthBone.RightPectoral,
@@ -56,7 +52,7 @@ namespace Genesis.Sentience.Learning
             },
         };
 
-        private static readonly float[] StageStandingThreshold = { 0.50f, 0.70f, 0.80f, 1f };
+        private static readonly float[] StageStandingThreshold = { 0.50f, 0.70f, 1f };
         private const int WINDOW_SIZE = 5000;
         private const int MIN_DECISIONS_PER_STAGE = 20000;
 

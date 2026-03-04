@@ -121,7 +121,7 @@ namespace Genesis.Sentience.Learning
         private readonly float _gamma;
         private readonly float _tau;
         private readonly int _policyFrequency;
-        private readonly float _targetEntropy;
+        private float _targetEntropy;
         private readonly float _qGradClipNorm;
         private readonly float _actorGradClipNorm;
         private readonly float _logAlphaMin;
@@ -139,6 +139,12 @@ namespace Genesis.Sentience.Learning
         public float LastActorLoss => _lastActorLoss;
         public float LastAlphaLoss => _lastAlphaLoss;
         public int TrainSteps => _trainStep;
+        public float TargetEntropy => _targetEntropy;
+
+        public void SetTargetEntropy(int activeDims, float entropyScale)
+        {
+            _targetEntropy = -activeDims * entropyScale;
+        }
 
         private SACActorNetwork _inferenceActorA;
         private SACActorNetwork _inferenceActorB;
