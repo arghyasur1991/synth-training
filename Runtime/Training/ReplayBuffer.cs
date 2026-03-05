@@ -32,6 +32,7 @@ namespace Genesis.Sentience.Learning
         private readonly float[] _actions;
         private readonly float[] _rewards;
         private readonly float[] _nextObs;
+        private readonly float[] _dones;
 
         // Sum-tree: 1-indexed binary tree with power-of-2 leaf count.
         // Leaves at [_treeCapacity, 2*_treeCapacity). Internal nodes store child sums.
@@ -54,6 +55,7 @@ namespace Genesis.Sentience.Learning
         private readonly float[] _stageAct;
         private readonly float[] _stageRew;
         private readonly float[] _stageNextObs;
+        private readonly float[] _stageDones;
         private volatile int _stageWrite;
         private int _stageRead;
 
@@ -84,6 +86,7 @@ namespace Genesis.Sentience.Learning
             _actions = new float[_capacity * actDim];
             _rewards = new float[_capacity];
             _nextObs = new float[_capacity * obsDim];
+            _dones = new float[_capacity];
 
             _treeCapacity = 1;
             while (_treeCapacity < _capacity) _treeCapacity <<= 1;
@@ -97,6 +100,7 @@ namespace Genesis.Sentience.Learning
             _stageAct = new float[STAGE_CAP * actDim];
             _stageRew = new float[STAGE_CAP];
             _stageNextObs = new float[STAGE_CAP * obsDim];
+            _stageDones = new float[STAGE_CAP];
             _stageWrite = 0;
             _stageRead = 0;
         }
@@ -138,13 +142,18 @@ namespace Genesis.Sentience.Learning
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Add(float[] obs, float[] action, float reward, float[] nextObs)
         {
+            Add(obs, action, reward, nextObs, 0f);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Add(float[] obs, float[] action, float reward, float[] nextObs, float done)
+        {
             int w = _stageWrite;
             int next = (w + 1) % STAGE_CAP;
 
-            // If staging is full, fall back to locked direct insert (rare)
             if (next == _stageRead)
             {
-                AddDirect(obs, action, reward, nextObs);
+                AddDirect(obs, action, reward, nextObs, done);
                 return;
             }
 
@@ -152,31 +161,29 @@ namespace Genesis.Sentience.Learning
             Buffer.BlockCopy(action, 0, _stageAct, w * _actStride, _actStride);
             _stageRew[w] = reward;
             Buffer.BlockCopy(nextObs, 0, _stageNextObs, w * _obsStride, _obsStride);
+            _stageDones[w] = done;
 
-            // Volatile write publishes all preceding stores
             _stageWrite = next;
         }
 
-        private void AddDirect(float[] obs, float[] action, float reward, float[] nextObs)
+        private void AddDirect(float[] obs, float[] action, float reward, float[] nextObs, float done)
         {
             lock (_lock)
             {
-                InsertEntry(obs, 0, action, 0, reward, nextObs, 0);
+                InsertEntry(obs, 0, action, 0, reward, nextObs, 0, done);
             }
         }
 
-        /// <summary>
-        /// Insert one transition into the main PER buffer. Caller must hold _lock.
-        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void InsertEntry(float[] obs, int obsOffset, float[] action, int actOffset,
-            float reward, float[] nextObs, int nextObsOffset)
+            float reward, float[] nextObs, int nextObsOffset, float done = 0f)
         {
             int slot = _head;
             Buffer.BlockCopy(obs, obsOffset, _obs, slot * _obsStride, _obsStride);
             Buffer.BlockCopy(action, actOffset, _actions, slot * _actStride, _actStride);
             _rewards[slot] = reward;
             Buffer.BlockCopy(nextObs, nextObsOffset, _nextObs, slot * _obsStride, _obsStride);
+            _dones[slot] = done;
 
             float priority = (float)Math.Pow(_maxPriority + PER_EPSILON, _perAlpha);
             TreeSet(slot, priority);
@@ -200,7 +207,8 @@ namespace Genesis.Sentience.Learning
                     _stageObs, r * _obsStride,
                     _stageAct, r * _actStride,
                     _stageRew[r],
-                    _stageNextObs, r * _obsStride);
+                    _stageNextObs, r * _obsStride,
+                    _stageDones[r]);
                 r = (r + 1) % STAGE_CAP;
             }
 
@@ -263,7 +271,6 @@ namespace Genesis.Sentience.Learning
                 }
             }
 
-            // Phase 2: copy data outside the lock (bulk memcpy, no contention)
             for (int i = 0; i < batchSize; i++)
             {
                 int idx = batch.Indices[i];
@@ -271,6 +278,7 @@ namespace Genesis.Sentience.Learning
                 Buffer.BlockCopy(_actions, idx * _actStride, batch.Actions, i * _actStride, _actStride);
                 batch.Rewards[i] = _rewards[idx];
                 Buffer.BlockCopy(_nextObs, idx * _obsStride, batch.NextObs, i * _obsStride, _obsStride);
+                batch.Dones[i] = _dones[idx];
             }
         }
 
@@ -295,13 +303,14 @@ namespace Genesis.Sentience.Learning
             lock (_lock)
             {
                 DrainStaging();
-                bw.Write((int)-2); // version marker (negative = versioned format)
+                bw.Write((int)-3); // version 3: adds dones
                 bw.Write(_count);
                 bw.Write(_head);
                 WriteFloats(bw, _obs, _count * _obsDim);
                 WriteFloats(bw, _actions, _count * _actDim);
                 WriteFloats(bw, _rewards, _count);
                 WriteFloats(bw, _nextObs, _count * _obsDim);
+                WriteFloats(bw, _dones, _count);
                 bw.Write(_treeCapacity);
                 WriteFloats(bw, _tree, 2 * _treeCapacity);
                 bw.Write(_maxPriority);
@@ -331,6 +340,15 @@ namespace Genesis.Sentience.Learning
                 ReadFloats(br, _rewards, _count);
                 ReadFloats(br, _nextObs, _count * _obsDim);
 
+                if (version >= 3)
+                {
+                    ReadFloats(br, _dones, _count);
+                }
+                else
+                {
+                    Array.Clear(_dones, 0, _dones.Length);
+                }
+
                 if (version >= 2)
                 {
                     int savedTreeCap = br.ReadInt32();
@@ -343,7 +361,7 @@ namespace Genesis.Sentience.Learning
                     {
                         var temp = new float[2 * savedTreeCap];
                         ReadFloats(br, temp, 2 * savedTreeCap);
-                        br.ReadSingle(); // skip saved maxPriority
+                        br.ReadSingle();
                         InitUniformPriorities();
                     }
                 }
@@ -404,6 +422,7 @@ namespace Genesis.Sentience.Learning
         public readonly float[] Actions;
         public readonly float[] Rewards;
         public readonly float[] NextObs;
+        public readonly float[] Dones;
         public readonly int[] Indices;
         public readonly float[] ISWeights;
         public readonly float[] TDErrors;
@@ -420,6 +439,7 @@ namespace Genesis.Sentience.Learning
             Actions = new float[size * actDim];
             Rewards = new float[size];
             NextObs = new float[size * obsDim];
+            Dones = new float[size];
             Indices = new int[size];
             ISWeights = new float[size];
             TDErrors = new float[size];
