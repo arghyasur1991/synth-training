@@ -312,6 +312,77 @@ namespace Genesis.Sentience.Learning
             }
         }
 
+        // ─── Generic ISkillTrainer-aware save/load ──────────────────
+
+        /// <summary>
+        /// Save training state using ISkillTrainer + a callback for extra subclass state.
+        /// Two-phase commit: all files written as .tmp first, then promoted atomically.
+        /// </summary>
+        public void Save(ISkillTrainer trainer, ObservationNormalizer normalizer,
+            int totalDecisions, Action<string> saveExtra,
+            double[] qpos = null, double[] qvel = null, double[] ctrl = null)
+        {
+            Directory.CreateDirectory(_directory);
+
+            // Phase 1: write .tmp files
+            trainer.Save(_directory);
+
+            WriteBinaryTmp(Path.Combine(_directory, NORMALIZER_FILE), 0,
+                bw => normalizer.Save(bw));
+
+            saveExtra?.Invoke(_directory);
+
+            if (qpos != null)
+                WritePhysicsSnapshotTmp(qpos, qvel, ctrl);
+
+            // Metadata as commit marker (last)
+            var meta = new LearningMetadata
+            {
+                totalDecisions = totalDecisions,
+                trainSteps = (int)trainer.TotalTrainSteps,
+                alpha = 0f,
+                replayCount = trainer.ExperienceCount,
+                timestamp = DateTime.UtcNow.ToString("o"),
+                version = 2
+            };
+            string tmpPath = Path.Combine(_directory, META_FILE + ".tmp");
+            File.WriteAllText(tmpPath, UnityEngine.JsonUtility.ToJson(meta, prettyPrint: true));
+
+            // Phase 2: promote .tmp → final
+            PromoteAllTmpFiles();
+        }
+
+        /// <summary>
+        /// Load training state using ISkillTrainer + a callback for extra subclass state.
+        /// </summary>
+        public void Load(ISkillTrainer trainer, ObservationNormalizer normalizer,
+            Action<string> loadExtra)
+        {
+            RecoverFromInterruptedSave();
+
+            string metaPath = Path.Combine(_directory, META_FILE);
+            if (!File.Exists(metaPath))
+                throw new FileNotFoundException("No saved state found", metaPath);
+
+            var meta = UnityEngine.JsonUtility.FromJson<LearningMetadata>(
+                File.ReadAllText(metaPath));
+            _loadedDecisionCount = meta.totalDecisions;
+
+            trainer.Load(_directory);
+
+            string normPath = Path.Combine(_directory, NORMALIZER_FILE);
+            if (File.Exists(normPath))
+            {
+                using var br = new BinaryReader(File.OpenRead(normPath));
+                normalizer.Load(br);
+            }
+
+            loadExtra?.Invoke(_directory);
+
+            UnityEngine.Debug.Log($"StatePersister: Loaded state (generic) from {_directory} — " +
+                $"decisions={meta.totalDecisions}, replay={meta.replayCount}, saved={meta.timestamp}");
+        }
+
         public unsafe bool LoadPhysicsState(MujocoLib.mjData_* data)
         {
             string path = Path.Combine(_directory, PHYSICS_FILE);
