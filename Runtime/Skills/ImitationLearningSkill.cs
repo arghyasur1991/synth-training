@@ -138,6 +138,11 @@ namespace Genesis.Sentience.Learning
             // Reward normalization inside PPOSkillTrainer handles scaling;
             // applying rewardScale on top would double-scale and destabilize.
             rewardScale = 1f;
+            // PPO requires exact consistency between stored action and logProb.
+            // Action smoothing stores smoothedAction in the rollout but logProb
+            // was computed for rawAction — the ratio exp(new_lp - old_lp)
+            // becomes meaningless, causing gradient explosion within 3 cycles.
+            actionSmoothingAlpha = 0f;
 
             var model = MjScene.Instance.Model;
             _nq = (int)model->nq;
@@ -492,25 +497,25 @@ namespace Genesis.Sentience.Learning
             var data = MjScene.Instance.Data;
             int idx = 0;
 
-            // Relative qpos: (current - reference), naturally centered around 0
             var inclQpos = _filter.includedQposIdx;
             if (inclQpos != null)
             {
                 for (int i = 0; i < inclQpos.Length; i++)
                 {
                     int qi = inclQpos[i];
-                    _refObsBuffer[idx++] = (float)(data->qpos[qi] - _refQpos[qi]);
+                    float diff = (float)(data->qpos[qi] - _refQpos[qi]);
+                    _refObsBuffer[idx++] = Math.Clamp(diff, -5f, 5f);
                 }
             }
 
-            // Relative qvel: (current - reference)
             var inclQvel = _filter.includedQvelIdx;
             if (inclQvel != null)
             {
                 for (int i = 0; i < inclQvel.Length; i++)
                 {
                     int vi = inclQvel[i];
-                    _refObsBuffer[idx++] = (float)(data->qvel[vi] - _refQvel[vi]);
+                    float diff = (float)(data->qvel[vi] - _refQvel[vi]);
+                    _refObsBuffer[idx++] = Math.Clamp(diff, -10f, 10f);
                 }
             }
 
