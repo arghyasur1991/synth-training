@@ -32,15 +32,24 @@ namespace Genesis.Sentience.Learning
             public int qposIndexZ;
         }
 
-        private const string SYNTH_PREFAB_PATH = "Assets/Sentience/Prefabs/Synth.prefab";
+        private const string DEFAULT_SYNTH_PREFAB_PATH = "Assets/Sentience/Prefabs/Synth.prefab";
 
+        /// <summary>
+        /// Extract motion reference data from an AnimationClip.
+        /// </summary>
+        /// <param name="synthPrefabPath">
+        /// Path to the Synth prefab for HumanPoseHandler retargeting. If null,
+        /// attempts to find a SynthEntity in the scene and derive the prefab path
+        /// from its Animator avatar. Falls back to the default path.
+        /// </param>
         public unsafe MotionReferenceData Extract(
             AnimationClip clip,
             GameObject humanoidRoot,
             MujocoLib.mjModel_* sharedModel,
             float fps = 30f,
             bool isLooping = true,
-            string[] keyBodyNames = null)
+            string[] keyBodyNames = null,
+            string synthPrefabPath = null)
         {
             if (clip == null) throw new ArgumentNullException(nameof(clip));
             if (humanoidRoot == null) throw new ArgumentNullException(nameof(humanoidRoot));
@@ -101,9 +110,8 @@ namespace Genesis.Sentience.Learning
             if (!string.IsNullOrEmpty(clipAssetPath))
                 sourceModelAsset = AssetDatabase.LoadAssetAtPath<GameObject>(clipAssetPath);
 
-            // Use clean Synth FBX (from Avatar source) instead of full prefab to avoid
-            // SynthEntity/MuJoCo component Awake() side-effects on instantiation
-            var synthPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(SYNTH_PREFAB_PATH);
+            string resolvedSynthPath = ResolveSynthPrefabPath(synthPrefabPath, humanoidRoot);
+            var synthPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(resolvedSynthPath);
             GameObject synthModelAsset = null;
             bool synthFromFBX = false;
             if (synthPrefab != null)
@@ -465,6 +473,35 @@ namespace Genesis.Sentience.Learning
         }
 
         #region Private helpers
+
+        private static string ResolveSynthPrefabPath(string explicitPath, GameObject humanoidRoot)
+        {
+            if (!string.IsNullOrEmpty(explicitPath))
+                return explicitPath;
+
+            #if UNITY_EDITOR
+            // Try to derive path from SynthEntity in scene
+            var entity = humanoidRoot.GetComponent<Genesis.Sentience.Synth.SynthEntity>();
+            if (entity == null)
+                entity = humanoidRoot.GetComponentInParent<Genesis.Sentience.Synth.SynthEntity>();
+            if (entity != null)
+            {
+                var animator = entity.GetComponent<Animator>()
+                    ?? entity.GetComponentInChildren<Animator>(true);
+                if (animator?.avatar != null)
+                {
+                    string prefabPath = UnityEditor.PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(entity.gameObject);
+                    if (!string.IsNullOrEmpty(prefabPath))
+                    {
+                        Debug.Log($"MotionClipExtractor: Resolved synth prefab from scene entity: {prefabPath}");
+                        return prefabPath;
+                    }
+                }
+            }
+            #endif
+
+            return DEFAULT_SYNTH_PREFAB_PATH;
+        }
 
         private List<BoneJointMapping> BuildBoneJointMappings(GameObject root)
         {

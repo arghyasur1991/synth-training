@@ -313,6 +313,7 @@ namespace Genesis.Sentience.Learning
             var actions = torch.tensor(batch.Actions).reshape(batch.Size, batch.ActDim).to(Device);
             var rewards = torch.tensor(batch.Rewards).reshape(batch.Size, 1).to(Device);
             var nextObs = torch.tensor(batch.NextObs).reshape(batch.Size, batch.ObsDim).to(Device);
+            var dones = torch.tensor(batch.Dones).reshape(batch.Size, 1).to(Device);
             var isWeights = torch.tensor(batch.ISWeights).reshape(batch.Size, 1).to(Device);
 
             float alpha = Alpha;
@@ -340,7 +341,7 @@ namespace Genesis.Sentience.Learning
                     var qf1NextTarget = QF1Target.forward(nextObs, nextAction);
                     var qf2NextTarget = QF2Target.forward(nextObs, nextAction);
                     var minQNext = torch.min(qf1NextTarget, qf2NextTarget);
-                    nextQValue = (rewards + _gamma * minQNext).clamp(-_maxQValue, _maxQValue);
+                    nextQValue = (rewards + _gamma * (1f - dones) * minQNext).clamp(-_maxQValue, _maxQValue);
                 }
 
                 var qf1Val = QF1.forward(obs, actions);

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 using Genesis.Sentience.Learning;
@@ -14,14 +15,14 @@ namespace Genesis.Sentience.Learning.EditorTools
             w.minSize = new Vector2(600, 400);
         }
 
-        private ContinuousLearningSkill _skill;
-        private ContinuousLearningSkill[] _allSkills;
+        private BaseTrainingSkill _skill;
+        private BaseTrainingSkill[] _allSkills;
         private int _selectedSkillIdx;
         private Vector2 _scroll;
 
         private static readonly string[] WindowLabels = { "1 min", "5 min", "15 min", "30 min" };
         private static readonly int[] WindowSamples = { 600, 3000, 9000, 18000 };
-        private int _windowIdx = 1; // default 5 min
+        private int _windowIdx = 1;
 
         private bool _foldReward = true;
         private bool _foldMain = true;
@@ -31,6 +32,7 @@ namespace Genesis.Sentience.Learning.EditorTools
         private bool _foldAlpha = true;
         private bool _foldState = true;
         private bool _foldPerf = true;
+        private bool _foldDynamic = true;
 
         static readonly Color C_RAW = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_CENTERED = new Color(0.40f, 0.70f, 1.00f);
@@ -74,6 +76,20 @@ namespace Genesis.Sentience.Learning.EditorTools
             new Color(0.13f, 0.59f, 0.95f), // Moving
         };
 
+        static readonly Color[] DynamicPalette =
+        {
+            new Color(0.30f, 0.90f, 0.35f),
+            new Color(0.40f, 0.70f, 1.00f),
+            new Color(1.00f, 0.60f, 0.00f),
+            new Color(0.61f, 0.15f, 0.69f),
+            new Color(0.00f, 0.74f, 0.83f),
+            new Color(0.96f, 0.26f, 0.21f),
+            new Color(1.00f, 0.92f, 0.23f),
+            new Color(0.91f, 0.12f, 0.39f),
+            new Color(0.55f, 0.76f, 0.29f),
+            new Color(0.62f, 0.62f, 0.62f),
+        };
+
         void OnEnable()
         {
             EditorApplication.playModeStateChanged += OnPlayMode;
@@ -99,7 +115,7 @@ namespace Genesis.Sentience.Learning.EditorTools
 
         void RefreshSkills()
         {
-            _allSkills = FindObjectsByType<ContinuousLearningSkill>(
+            _allSkills = FindObjectsByType<BaseTrainingSkill>(
                 FindObjectsInactive.Exclude, FindObjectsSortMode.None);
             if (_allSkills.Length > 0)
             {
@@ -124,65 +140,107 @@ namespace Genesis.Sentience.Learning.EditorTools
 
             if (_skill == null || !_skill.IsReady || _skill.Metrics == null)
             {
-                EditorGUILayout.HelpBox("Waiting for ContinuousLearningSkill to initialize...", MessageType.Info);
+                EditorGUILayout.HelpBox("Waiting for a training skill to initialize...", MessageType.Info);
                 return;
             }
 
             var m = _skill.Metrics;
             int window = WindowSamples[_windowIdx];
 
-            DrawSummary(m);
+            bool isContinuous = _skill is ContinuousLearningSkill;
+
+            DrawSummary(m, isContinuous);
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
-            DrawPhaseStrip(m, window);
+            if (isContinuous && m.Phase.Count > 1)
+                DrawPhaseStrip(m, window);
 
+            // Reward overview (universal)
             if (_foldReward = EditorGUILayout.Foldout(_foldReward, "Reward Overview", true, EditorStyles.foldoutHeader))
-                DrawGraph(150, window,
-                    (m.RawReward, C_RAW, "Raw"),
-                    (m.CenteredReward, C_CENTERED, "Centered"),
-                    (m.RewardBar, C_BAR, "Bar"));
+            {
+                if (isContinuous)
+                    DrawGraph(150, window,
+                        (m.RawReward, C_RAW, "Raw"),
+                        (m.CenteredReward, C_CENTERED, "Centered"),
+                        (m.RewardBar, C_BAR, "Bar"));
+                else
+                    DrawGraph(150, window,
+                        (m.RawReward, C_RAW, "Raw"));
+            }
 
-            if (_foldMain = EditorGUILayout.Foldout(_foldMain, "Main Reward Components", true, EditorStyles.foldoutHeader))
-                DrawGraph(170, window,
-                    (m.Height, C_HEIGHT, "Height"),
-                    (m.Orientation, C_ORIENT, "Orient"),
-                    (m.Imitation, C_IMIT, "Imitation"),
-                    (m.Comfort, C_COMFORT, "Comfort"),
-                    (m.Energy, C_ENERGY, "Energy"),
-                    (m.Alive, C_ALIVE, "Alive"));
+            // ContinuousLearning-specific sections
+            if (isContinuous)
+            {
+                if (_foldMain = EditorGUILayout.Foldout(_foldMain, "Main Reward Components", true, EditorStyles.foldoutHeader))
+                    DrawGraph(170, window,
+                        (m.Height, C_HEIGHT, "Height"),
+                        (m.Orientation, C_ORIENT, "Orient"),
+                        (m.Imitation, C_IMIT, "Imitation"),
+                        (m.Comfort, C_COMFORT, "Comfort"),
+                        (m.Energy, C_ENERGY, "Energy"),
+                        (m.Alive, C_ALIVE, "Alive"));
 
-            if (_foldRecovery = EditorGUILayout.Foldout(_foldRecovery, "Recovery Rewards", true, EditorStyles.foldoutHeader))
-                DrawGraph(150, window,
-                    (m.Recovery, C_RECOVERY, "Recovery"),
-                    (m.VelocityUp, C_VEL_UP, "VelUp"),
-                    (m.PhaseBonus, C_PHASE_B, "PhaseBonus"));
+                if (_foldRecovery = EditorGUILayout.Foldout(_foldRecovery, "Recovery Rewards", true, EditorStyles.foldoutHeader))
+                    DrawGraph(150, window,
+                        (m.Recovery, C_RECOVERY, "Recovery"),
+                        (m.VelocityUp, C_VEL_UP, "VelUp"),
+                        (m.PhaseBonus, C_PHASE_B, "PhaseBonus"));
 
-            if (_foldContact = EditorGUILayout.Foldout(_foldContact, "Contact Rewards", true, EditorStyles.foldoutHeader))
-                DrawGraph(150, window,
-                    (m.FootSupport, C_FOOT, "Foot"),
-                    (m.HandBrace, C_HAND, "Hand"),
-                    (m.ActiveSupport, C_ACTIVE, "Active"));
+                if (_foldContact = EditorGUILayout.Foldout(_foldContact, "Contact Rewards", true, EditorStyles.foldoutHeader))
+                    DrawGraph(150, window,
+                        (m.FootSupport, C_FOOT, "Foot"),
+                        (m.HandBrace, C_HAND, "Hand"),
+                        (m.ActiveSupport, C_ACTIVE, "Active"));
 
-            if (_foldTraining = EditorGUILayout.Foldout(_foldTraining, "Training Losses", true, EditorStyles.foldoutHeader))
-                DrawGraph(150, window,
-                    (m.QLoss, C_QLOSS, "QLoss"),
-                    (m.ActorLoss, C_ALOSS, "ActorLoss"),
-                    (m.AlphaLoss, C_ALPHA_L, "AlphaLoss"));
+                if (_foldTraining = EditorGUILayout.Foldout(_foldTraining, "Training Losses (SAC)", true, EditorStyles.foldoutHeader))
+                    DrawGraph(150, window,
+                        (m.QLoss, C_QLOSS, "QLoss"),
+                        (m.ActorLoss, C_ALOSS, "ActorLoss"),
+                        (m.AlphaLoss, C_ALPHA_L, "AlphaLoss"));
 
-            if (_foldAlpha = EditorGUILayout.Foldout(_foldAlpha, "Alpha (Entropy Temperature)", true, EditorStyles.foldoutHeader))
-                DrawGraph(120, window,
-                    (m.Alpha, C_ALPHA, "Alpha"));
+                if (_foldAlpha = EditorGUILayout.Foldout(_foldAlpha, "Alpha (Entropy Temperature)", true, EditorStyles.foldoutHeader))
+                    DrawGraph(120, window,
+                        (m.Alpha, C_ALPHA, "Alpha"));
 
-            if (_foldState = EditorGUILayout.Foldout(_foldState, "Agent State", true, EditorStyles.foldoutHeader))
-                DrawGraph(150, window,
-                    (m.RootZ, C_ROOTZ, "RootZ"),
-                    (m.StandBlend, C_BLEND, "StandBlend"));
+                if (_foldState = EditorGUILayout.Foldout(_foldState, "Agent State", true, EditorStyles.foldoutHeader))
+                    DrawGraph(150, window,
+                        (m.RootZ, C_ROOTZ, "RootZ"),
+                        (m.StandBlend, C_BLEND, "StandBlend"));
+            }
 
+            // Dynamic metrics from any skill's GetDiagnostics()
+            var dynamicMetrics = m.DynamicMetrics;
+            if (dynamicMetrics.Count > 0)
+            {
+                if (_foldDynamic = EditorGUILayout.Foldout(_foldDynamic,
+                    $"Skill Metrics ({_skill.Name})", true, EditorStyles.foldoutHeader))
+                {
+                    var seriesList = new List<(MetricRingBuffer buf, Color col, string label)>();
+                    int colorIdx = 0;
+                    foreach (var kv in dynamicMetrics)
+                    {
+                        seriesList.Add((kv.Value,
+                            DynamicPalette[colorIdx % DynamicPalette.Length], kv.Key));
+                        colorIdx++;
+                    }
+
+                    const int MAX_PER_GRAPH = 6;
+                    for (int i = 0; i < seriesList.Count; i += MAX_PER_GRAPH)
+                    {
+                        int count = Math.Min(MAX_PER_GRAPH, seriesList.Count - i);
+                        var batch = new (MetricRingBuffer, Color, string)[count];
+                        seriesList.CopyTo(i, batch, 0, count);
+                        DrawGraph(140, window, batch);
+                    }
+                }
+            }
+
+            // Performance (universal)
             if (_foldPerf = EditorGUILayout.Foldout(_foldPerf, "Performance", true, EditorStyles.foldoutHeader))
             {
                 DrawGraph(120, window, (m.TrainingSPS, C_SPS, "Train SPS"));
-                DrawGraph(100, window, (m.ReplayCount, C_BUF, "Buffer"));
+                DrawGraph(100, window, (m.ReplayCount, C_BUF, "Buffer / Rollout"));
             }
 
             EditorGUILayout.EndScrollView();
@@ -196,14 +254,18 @@ namespace Genesis.Sentience.Learning.EditorTools
             {
                 var names = new string[_allSkills.Length];
                 for (int i = 0; i < _allSkills.Length; i++)
-                    names[i] = _allSkills[i].gameObject.name;
+                    names[i] = $"{_allSkills[i].Name} ({_allSkills[i].gameObject.name})";
                 int newIdx = EditorGUILayout.Popup(_selectedSkillIdx, names,
-                    EditorStyles.toolbarPopup, GUILayout.Width(150));
+                    EditorStyles.toolbarPopup, GUILayout.Width(200));
                 if (newIdx != _selectedSkillIdx)
                 {
                     _selectedSkillIdx = newIdx;
                     _skill = _allSkills[newIdx];
                 }
+            }
+            else if (_skill != null)
+            {
+                EditorGUILayout.LabelField(_skill.Name, EditorStyles.toolbarButton, GUILayout.Width(120));
             }
 
             GUILayout.FlexibleSpace();
@@ -215,21 +277,32 @@ namespace Genesis.Sentience.Learning.EditorTools
             EditorGUILayout.EndHorizontal();
         }
 
-        void DrawSummary(TrainingMetrics m)
+        void DrawSummary(TrainingMetrics m, bool isContinuous)
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
 
-            var phase = _skill.CurrentPhase;
-            var phaseCol = PhaseColors[Math.Min((int)phase, PhaseColors.Length - 1)];
-            var oldCol = GUI.contentColor;
-            GUI.contentColor = phaseCol;
-            EditorGUILayout.LabelField(phase.ToString(), EditorStyles.boldLabel, GUILayout.Width(80));
-            GUI.contentColor = oldCol;
+            if (isContinuous)
+            {
+                var cls = (ContinuousLearningSkill)_skill;
+                var phase = cls.CurrentPhase;
+                var phaseCol = PhaseColors[Math.Min((int)phase, PhaseColors.Length - 1)];
+                var oldCol = GUI.contentColor;
+                GUI.contentColor = phaseCol;
+                EditorGUILayout.LabelField(phase.ToString(), EditorStyles.boldLabel, GUILayout.Width(80));
+                GUI.contentColor = oldCol;
+            }
+            else
+            {
+                EditorGUILayout.LabelField(_skill.Name, EditorStyles.boldLabel, GUILayout.Width(120));
+            }
 
             Lbl($"Raw: {m.RawReward.Latest:F3}", 90);
-            Lbl($"Ctr: {m.CenteredReward.Latest:F3}", 90);
-            Lbl($"\u03B1: {m.Alpha.Latest:F3}", 65);
-            Lbl($"QL: {m.QLoss.Latest:F4}", 80);
+            if (isContinuous)
+            {
+                Lbl($"Ctr: {m.CenteredReward.Latest:F3}", 90);
+                Lbl($"\u03B1: {m.Alpha.Latest:F3}", 65);
+                Lbl($"QL: {m.QLoss.Latest:F4}", 80);
+            }
             Lbl($"SPS: {m.TrainingSPS.Latest:F0}", 65);
             Lbl($"Buf: {m.ReplayCount.Latest:F0}", 80);
             Lbl($"Dec: {_skill.TotalDecisions:N0}", 100);
@@ -265,7 +338,6 @@ namespace Genesis.Sentience.Learning.EditorTools
             }
             else
             {
-                int samplesPerPx = Mathf.CeilToInt(1f / pxPerSample);
                 for (int px = 0; px < (int)rect.width; px++)
                 {
                     int sampleIdx = start + (int)((float)px / rect.width * vis);
