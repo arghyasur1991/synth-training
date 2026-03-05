@@ -159,6 +159,7 @@ namespace Genesis.Sentience.Learning
                 }
             }
 
+            _agent.SyncInferenceWeights();
             _rollout.Clear();
             _totalIterations++;
         }

@@ -36,10 +36,10 @@ namespace Genesis.Sentience.Learning
     }
 
     /// <summary>
-    /// PPO actor-critic agent extracted from the legacy CleanRLAgent.
-    /// Diagonal Gaussian policy with orthogonal initialization.
-    /// Provides stochastic and deterministic action sampling, action evaluation
-    /// for the PPO update, and gradient-clipped update step.
+    /// PPO actor-critic agent with double-buffered CPU inference.
+    /// Training happens on GPU (MPS/CUDA). Inference (GetActionAndValue,
+    /// GetDeterministicAction) uses CPU clones swapped atomically, so the
+    /// main thread never touches MPS — avoiding concurrent access crashes.
     /// </summary>
     public class PPOAgent : IDisposable
     {
@@ -55,7 +55,13 @@ namespace Genesis.Sentience.Learning
         private readonly float _maxGradNorm;
         private int _updateCount;
 
-        private Tensor _infObsTensor;
+        // Double-buffered CPU inference networks (main thread reads, never GPU)
+        private Sequential _infActorA, _infActorB;
+        private Sequential _infCriticA, _infCriticB;
+        private Tensor _infLogStdA, _infLogStdB;
+        private volatile int _infSlot; // 0 = A active, 1 = B active
+
+        private Tensor _infObsTensor; // CPU tensor for inference
         private readonly int _infObsBytes;
         private readonly float[] _actionBuffer;
 
@@ -91,9 +97,43 @@ namespace Genesis.Sentience.Learning
 
             _optimizer = optim.Adam(AllParameters(), lr: config.LearningRate, eps: 1e-5);
 
+            // CPU inference clones (double-buffered)
+            _infActorA = BuildActorClone(obsDim, actDim, config);
+            _infActorB = BuildActorClone(obsDim, actDim, config);
+            _infCriticA = BuildCriticClone(obsDim, config);
+            _infCriticB = BuildCriticClone(obsDim, config);
+            _infLogStdA = torch.full(new long[] { 1, actDim }, config.LogStdInit);
+            _infLogStdB = torch.full(new long[] { 1, actDim }, config.LogStdInit);
+            _infSlot = 0;
+            SyncInferenceWeights();
+
             _actionBuffer = new float[actDim];
-            _infObsTensor = torch.zeros(1, obsDim, dtype: ScalarType.Float32, device: device);
+            _infObsTensor = torch.zeros(1, obsDim, dtype: ScalarType.Float32);
             _infObsBytes = obsDim * sizeof(float);
+        }
+
+        private static Sequential BuildActorClone(int obsDim, int actDim, PPOConfig config)
+        {
+            var s = Sequential(
+                LayerInit(Linear(obsDim, config.Hidden1), Math.Sqrt(2)),
+                Tanh(),
+                LayerInit(Linear(config.Hidden1, config.Hidden2), Math.Sqrt(2)),
+                Tanh(),
+                LayerInit(Linear(config.Hidden2, actDim), 0.01));
+            s.to(torch.CPU);
+            return s;
+        }
+
+        private static Sequential BuildCriticClone(int obsDim, PPOConfig config)
+        {
+            var s = Sequential(
+                LayerInit(Linear(obsDim, config.Hidden1), Math.Sqrt(2)),
+                Tanh(),
+                LayerInit(Linear(config.Hidden1, config.Hidden2), Math.Sqrt(2)),
+                Tanh(),
+                LayerInit(Linear(config.Hidden2, 1), 1.0));
+            s.to(torch.CPU);
+            return s;
         }
 
         private static Module<Tensor, Tensor> LayerInit(Linear layer, double std, double biasConst = 0.0)
@@ -114,7 +154,8 @@ namespace Genesis.Sentience.Learning
 
         /// <summary>
         /// Sample stochastic action and return (action, logProb, value).
-        /// The returned arrays are valid until the next call.
+        /// Uses CPU inference clones — safe to call from the main thread
+        /// while the training thread runs GPU operations.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public (float[] action, float logProb, float value) GetActionAndValue(float[] obs)
@@ -122,13 +163,19 @@ namespace Genesis.Sentience.Learning
             using var scope = NewDisposeScope();
             float logProbVal, valueVal;
 
+            // Snapshot the active slot (volatile read)
+            var slot = _infSlot;
+            var actor = slot == 0 ? _infActorA : _infActorB;
+            var critic = slot == 0 ? _infCriticA : _infCriticB;
+            var logStdTensor = slot == 0 ? _infLogStdA : _infLogStdB;
+
             using (no_grad())
             {
                 _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
                 var obsTensor = _infObsTensor;
 
-                var mean = _actorMean.forward(obsTensor);
-                var logStd = _actorLogStd.clamp(-2.0f, 0.5f).expand_as(mean);
+                var mean = actor.forward(obsTensor);
+                var logStd = logStdTensor.clamp(-2.0f, 0.5f).expand_as(mean);
                 var std = logStd.exp();
 
                 var noise = torch.randn_like(mean);
@@ -138,7 +185,7 @@ namespace Genesis.Sentience.Learning
                 var logProb = (-0.5f * ((diff / std).pow(2) + 2f * logStd
                               + (float)Math.Log(2 * Math.PI))).sum(-1);
 
-                var value = _critic.forward(obsTensor).flatten();
+                var value = critic.forward(obsTensor).flatten();
 
                 CopyTensorToBuffer(action, _actionBuffer);
                 logProbVal = logProb.item<float>();
@@ -148,15 +195,16 @@ namespace Genesis.Sentience.Learning
             return (_actionBuffer, logProbVal, valueVal);
         }
 
-        /// <summary>Get deterministic (mean) action for inference.</summary>
+        /// <summary>Get deterministic (mean) action for inference. CPU-only.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float[] GetDeterministicAction(float[] obs)
         {
             using var scope = NewDisposeScope();
+            var actor = _infSlot == 0 ? _infActorA : _infActorB;
             using (no_grad())
             {
                 _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
-                var mean = _actorMean.forward(_infObsTensor);
+                var mean = actor.forward(_infObsTensor);
                 CopyTensorToBuffer(mean, _actionBuffer);
             }
             return _actionBuffer;
@@ -248,6 +296,46 @@ namespace Genesis.Sentience.Learning
                     entropyLoss.item<float>(), approxKL, clipFrac);
         }
 
+        /// <summary>
+        /// Copy GPU training weights to the staging CPU inference clone,
+        /// then atomically swap the active slot. Lock-free for the reader.
+        /// Call from the training thread after each PPO update round.
+        /// </summary>
+        public void SyncInferenceWeights()
+        {
+            using var scope = NewDisposeScope();
+
+            int active = _infSlot;
+            var stagingActor = active == 0 ? _infActorB : _infActorA;
+            var stagingCritic = active == 0 ? _infCriticB : _infCriticA;
+            var stagingLogStd = active == 0 ? _infLogStdB : _infLogStdA;
+
+            using (no_grad())
+            {
+                CopyWeights(_actorMean, stagingActor);
+                CopyWeights(_critic, stagingCritic);
+                stagingLogStd.copy_(_actorLogStd.cpu());
+            }
+
+            // Atomic swap
+            _infSlot = active == 0 ? 1 : 0;
+        }
+
+        private static void CopyWeights(Sequential src, Sequential dst)
+        {
+            using var scope = NewDisposeScope();
+            var srcParams = src.named_parameters();
+            var dstDict = new System.Collections.Generic.Dictionary<string, Parameter>();
+            foreach (var (name, param) in dst.named_parameters())
+                dstDict[name] = param;
+
+            foreach (var (name, srcP) in srcParams)
+            {
+                if (dstDict.TryGetValue(name, out var dstP))
+                    dstP.copy_(srcP.cpu());
+            }
+        }
+
         public void SetLearningRate(float lr)
         {
             foreach (var pg in _optimizer.ParamGroups)
@@ -302,6 +390,7 @@ namespace Genesis.Sentience.Learning
 
             _optimizer?.Dispose();
             _optimizer = optim.Adam(AllParameters(), lr: 3e-4f, eps: 1e-5);
+            SyncInferenceWeights();
         }
 
         public void Dispose()
@@ -311,6 +400,12 @@ namespace Genesis.Sentience.Learning
             _actorLogStd?.Dispose();
             _optimizer?.Dispose();
             _infObsTensor?.Dispose();
+            _infActorA?.Dispose();
+            _infActorB?.Dispose();
+            _infCriticA?.Dispose();
+            _infCriticB?.Dispose();
+            _infLogStdA?.Dispose();
+            _infLogStdB?.Dispose();
         }
     }
 }
