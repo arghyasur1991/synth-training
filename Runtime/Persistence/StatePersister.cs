@@ -31,6 +31,7 @@ namespace Genesis.Sentience.Learning
         private readonly string _directory;
         private int _loadedDecisionCount;
 
+        public string Directory => _directory;
         public int LoadedDecisionCount => _loadedDecisionCount;
 
         public StatePersister(string directory)
