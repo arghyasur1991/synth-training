@@ -130,12 +130,14 @@ namespace Genesis.Sentience.Learning
                         _mbObs, _mbActions, _mbLogProbs,
                         _mbAdvantages, _mbReturns, _mbValues);
 
-                    var obsT = TorchSharp.torch.tensor(_mbObs).reshape(actualMb, _agent.ObsDim);
-                    var actT = TorchSharp.torch.tensor(_mbActions).reshape(actualMb, _agent.ActDim);
-                    var logPT = TorchSharp.torch.tensor(_mbLogProbs, actualMb);
-                    var advT = TorchSharp.torch.tensor(_mbAdvantages, actualMb);
-                    var retT = TorchSharp.torch.tensor(_mbReturns, actualMb);
-                    var valT = TorchSharp.torch.tensor(_mbValues, actualMb);
+                    var obsT = TorchSharp.torch.tensor(_mbObs[..(actualMb * _agent.ObsDim)])
+                        .reshape(actualMb, _agent.ObsDim);
+                    var actT = TorchSharp.torch.tensor(_mbActions[..(actualMb * _agent.ActDim)])
+                        .reshape(actualMb, _agent.ActDim);
+                    var logPT = TorchSharp.torch.tensor(_mbLogProbs[..actualMb]);
+                    var advT = TorchSharp.torch.tensor(_mbAdvantages[..actualMb]);
+                    var retT = TorchSharp.torch.tensor(_mbReturns[..actualMb]);
+                    var valT = TorchSharp.torch.tensor(_mbValues[..actualMb]);
 
                     var (pg, vl, ent, kl, cf) = _agent.UpdateStep(
                         obsT, actT, logPT, advT, retT, valT, _config);

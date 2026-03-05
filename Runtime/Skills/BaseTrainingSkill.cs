@@ -412,7 +412,7 @@ namespace Genesis.Sentience.Learning
 
         private void LoadState()
         {
-            var dir = _persister.Directory;
+            var dir = _persister.SaveDirectory;
 
             _trainer.Load(dir);
 
@@ -457,7 +457,7 @@ namespace Genesis.Sentience.Learning
             SnapshotPhysics(ref qposSnap, ref qvelSnap, ref ctrlSnap);
 
             int decisions = _totalDecisions;
-            string dir = _persister.Directory;
+            string dir = _persister.SaveDirectory;
 
             Task.Run(() =>
             {
@@ -602,7 +602,7 @@ namespace Genesis.Sentience.Learning
                 SnapshotPhysics(ref qposSnap, ref qvelSnap, ref ctrlSnap);
 
                 int decisions = _totalDecisions;
-                string dir = _persister.Directory;
+                string dir = _persister.SaveDirectory;
                 _saveInProgress = true;
 
                 Task.Run(() =>
