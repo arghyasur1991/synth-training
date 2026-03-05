@@ -225,6 +225,10 @@ namespace Genesis.Sentience.Learning
                 UpdateClipWeights();
                 _stepsSinceWeightUpdate = 0;
             }
+
+            if (_metrics != null)
+                _metrics.SampleGeneric(reward, _trainer?.StepsPerSecond ?? 0f,
+                    _trainer?.ExperienceCount ?? 0, GetDiagnostics());
         }
 
         protected override void SaveExtraState(string directory)

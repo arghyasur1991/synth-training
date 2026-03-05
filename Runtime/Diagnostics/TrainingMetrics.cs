@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Genesis.Sentience.Learning
 {
@@ -111,10 +112,18 @@ namespace Genesis.Sentience.Learning
         // --- Buffer ---
         public readonly MetricRingBuffer ReplayCount;
 
+        // --- Dynamic / skill-specific metrics ---
+        private readonly Dictionary<string, MetricRingBuffer> _dynamic
+            = new Dictionary<string, MetricRingBuffer>(16);
+        private readonly int _capacity;
+
+        public IReadOnlyDictionary<string, MetricRingBuffer> DynamicMetrics => _dynamic;
+
         public int TotalSamples { get; private set; }
 
         public TrainingMetrics(int capacity = DEFAULT_CAPACITY)
         {
+            _capacity = capacity;
             RawReward = new MetricRingBuffer(capacity);
             CenteredReward = new MetricRingBuffer(capacity);
             RewardBar = new MetricRingBuffer(capacity);
@@ -190,6 +199,44 @@ namespace Genesis.Sentience.Learning
             ReplayCount.Push(replayCount);
 
             TotalSamples++;
+        }
+
+        /// <summary>
+        /// Record common metrics plus arbitrary skill-specific key/value pairs.
+        /// Use this for skills that don't have ContinuousLearning's RewardSnapshot.
+        /// </summary>
+        public void SampleGeneric(float rawReward, float sps, int expCount,
+            Dictionary<string, float> custom = null)
+        {
+            RawReward.Push(rawReward);
+            TrainingSPS.Push(sps);
+            ReplayCount.Push(expCount);
+
+            if (custom != null)
+            {
+                foreach (var kv in custom)
+                {
+                    if (!_dynamic.TryGetValue(kv.Key, out var buf))
+                    {
+                        buf = new MetricRingBuffer(_capacity);
+                        _dynamic[kv.Key] = buf;
+                    }
+                    buf.Push(kv.Value);
+                }
+            }
+
+            TotalSamples++;
+        }
+
+        /// <summary>Push a single named dynamic metric.</summary>
+        public void PushDynamic(string name, float value)
+        {
+            if (!_dynamic.TryGetValue(name, out var buf))
+            {
+                buf = new MetricRingBuffer(_capacity);
+                _dynamic[name] = buf;
+            }
+            buf.Push(value);
         }
     }
 }
