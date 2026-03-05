@@ -9,10 +9,22 @@ On-device reinforcement learning for Synth humanoids using [TorchSharp](https://
 - **Prioritized Experience Replay** — PER with importance sampling and beta annealing for sample-efficient learning.
 - **Continuous Learning** — `ContinuousLearningSkill` implements `ISynthSkill` for persistent, always-on training with phase-based reward shaping.
 - **Progressive Action Curriculum** — Unlock joints in stages as the agent improves, with automatic target entropy adjustment.
-- **Live Training Dashboard** — Editor window (`Sentience/Training Dashboard`) with real-time graphs for reward components, losses, alpha, phase timeline, and performance metrics.
+- **Live Training Dashboard** — Editor window (`Synth/Training Dashboard`) with real-time graphs for reward components, losses, alpha, phase timeline, and performance metrics.
 - **Motion Reference Tooling** — Extract reference motion from AnimationClips, play back on non-MuJoCo characters, and visually validate motion extraction pipelines.
 - **Atomic State Persistence** — Crash-safe save/load with temporary file and atomic rename. Survives interrupted writes.
 - **IL2CPP Compatible** — Custom bridge for TorchSharp on IL2CPP (Quest/Android). Static forward-slot pool avoids marshalling issues.
+
+## Ecosystem
+
+synth-training is part of a three-package architecture for creating, training, and interacting with physics-simulated humanoids:
+
+| Package | Role | |
+|---------|------|-|
+| [**synth-core**](https://github.com/arghyasur1991/synth-core) | Humanoid creation, MuJoCo physics, skill architecture | Required |
+| **synth-training** *(this repo)* | On-device reinforcement learning via TorchSharp SAC | — |
+| [**synth-vr**](https://github.com/arghyasur1991/synth-vr) | Mixed reality interaction on Meta Quest | Optional |
+
+synth-core provides the physics body, motor system, and extensible skill/sense interfaces that synth-training builds on. This package implements `ISynthSkill` to add continuous learning directly in Unity — no external Python server needed. When combined with **synth-vr**, training runs live on Meta Quest while you physically interact with the Synth in your room.
 
 ## Requirements
 
