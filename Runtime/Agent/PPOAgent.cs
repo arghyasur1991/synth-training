@@ -84,7 +84,7 @@ namespace Genesis.Sentience.Learning
                 LayerInit(Linear(config.Hidden2, actDim), 0.01)
             );
 
-            _actorLogStd = Parameter(torch.full(new long[] { 1, actDim }, config.LogStdInit));
+            _actorLogStd = Parameter(torch.full(new long[] { 1, actDim }, config.LogStdInit, device: device));
 
             _critic.to(device);
             _actorMean.to(device);
@@ -92,7 +92,7 @@ namespace Genesis.Sentience.Learning
             _optimizer = optim.Adam(AllParameters(), lr: config.LearningRate, eps: 1e-5);
 
             _actionBuffer = new float[actDim];
-            _infObsTensor = torch.zeros(1, obsDim, dtype: ScalarType.Float32);
+            _infObsTensor = torch.zeros(1, obsDim, dtype: ScalarType.Float32, device: device);
             _infObsBytes = obsDim * sizeof(float);
         }
 

@@ -99,7 +99,7 @@ namespace Genesis.Sentience.Learning
             using (TorchSharp.torch.no_grad())
             {
                 var obsTensor = TorchSharp.torch.tensor(_lastObs)
-                    .reshape(1, _agent.ObsDim);
+                    .reshape(1, _agent.ObsDim).to(_agent.Device);
                 lastValue = _agent.GetValue(obsTensor).item<float>();
             }
 
@@ -130,14 +130,15 @@ namespace Genesis.Sentience.Learning
                         _mbObs, _mbActions, _mbLogProbs,
                         _mbAdvantages, _mbReturns, _mbValues);
 
+                    var dev = _agent.Device;
                     var obsT = TorchSharp.torch.tensor(_mbObs[..(actualMb * _agent.ObsDim)])
-                        .reshape(actualMb, _agent.ObsDim);
+                        .reshape(actualMb, _agent.ObsDim).to(dev);
                     var actT = TorchSharp.torch.tensor(_mbActions[..(actualMb * _agent.ActDim)])
-                        .reshape(actualMb, _agent.ActDim);
-                    var logPT = TorchSharp.torch.tensor(_mbLogProbs[..actualMb]);
-                    var advT = TorchSharp.torch.tensor(_mbAdvantages[..actualMb]);
-                    var retT = TorchSharp.torch.tensor(_mbReturns[..actualMb]);
-                    var valT = TorchSharp.torch.tensor(_mbValues[..actualMb]);
+                        .reshape(actualMb, _agent.ActDim).to(dev);
+                    var logPT = TorchSharp.torch.tensor(_mbLogProbs[..actualMb]).to(dev);
+                    var advT = TorchSharp.torch.tensor(_mbAdvantages[..actualMb]).to(dev);
+                    var retT = TorchSharp.torch.tensor(_mbReturns[..actualMb]).to(dev);
+                    var valT = TorchSharp.torch.tensor(_mbValues[..actualMb]).to(dev);
 
                     var (pg, vl, ent, kl, cf) = _agent.UpdateStep(
                         obsT, actT, logPT, advT, retT, valT, _config);
