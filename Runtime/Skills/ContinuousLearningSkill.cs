@@ -1,11 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 using UnityEngine;
-using TorchSharp;
-using static TorchSharp.torch;
 using Mujoco;
 using Genesis.Sentience.Synth;
 using Random = System.Random;
@@ -14,24 +11,13 @@ using Debug = UnityEngine.Debug;
 namespace Genesis.Sentience.Learning
 {
     /// <summary>
-    /// L0 skill for continuous, non-episodic learning.
-    ///
-    /// Performance-critical design:
-    ///   - Act() is zero-allocation (pre-allocated obs/action buffers)
-    ///   - Save runs on a background task (never blocks main thread)
-    ///   - Training thread is throttled to leave CPU for the game loop
-    ///   - Lock-free inference via ping-pong actor swap
-    ///   - Adaptive throttle backs off training when frames drop
+    /// L0 skill for continuous, non-episodic learning via SAC.
+    /// Inherits common infrastructure from BaseTrainingSkill; keeps only
+    /// ContinuingReward, ActionCurriculum, assisted poses, and motion indexing.
     /// </summary>
-    public class ContinuousLearningSkill : MonoBehaviour, ISynthSkill
+    public class ContinuousLearningSkill : BaseTrainingSkill
     {
-        [Header("Learning")]
-        [Tooltip("Use MPS (Metal) for training if available")]
-        public bool preferMPS = true;
-
-        [Tooltip("Random actions for initial exploration")]
-        public int learningStarts = 5000;
-
+        [Header("SAC")]
         [Tooltip("SAC hyperparameters")]
         public SACConfig sacConfig = new SACConfig();
 
@@ -39,83 +25,36 @@ namespace Genesis.Sentience.Learning
         [Tooltip("Animation clips used as reward attractors (nearest-frame matching)")]
         public AnimationClip[] referenceClips;
 
-        [Tooltip("Sampling rate for motion extraction (full fidelity)")]
+        [Tooltip("Sampling rate for motion extraction")]
         public float extractionFps = 30f;
 
-        [Tooltip("FPS used for nearest-frame matching. Lower = fewer frames to search. " +
-            "5fps is sufficient since we only need coarse pose similarity.")]
+        [Tooltip("FPS for nearest-frame matching. Lower = fewer frames to search.")]
         public float matchingFps = 5f;
 
-        [Tooltip("Only recompute nearest-frame every N decision steps. " +
-            "Cached distance is reused between searches. Reduces per-frame cost linearly.")]
+        [Tooltip("Recompute nearest-frame every N decision steps.")]
         [Range(1, 16)]
         public int nearestFrameInterval = 4;
 
         [Tooltip("Whether clips loop")]
         public bool clipsAreLooping = true;
 
-        [Header("Decision")]
-        [Tooltip("Physics sub-steps per decision")]
-        [Range(1, 10)]
-        public int frameSkip = 2;
-
-        [Header("Training Throttle")]
-        [Tooltip("Max training steps/sec (0 = unlimited). Lower = more CPU for game loop.")]
-        public int maxTrainingSPS = 200;
-
-        [Header("Quest / Mobile Overrides")]
-        [Tooltip("Auto-detect Quest and apply mobile-optimized defaults")]
-        public bool autoDetectMobile = true;
-
-        [Tooltip("frameSkip override on Quest (higher = fewer inference calls per FixedUpdate)")]
-        [Range(1, 10)]
-        public int questFrameSkip = 6;
-
-        [Tooltip("Max training SPS on Quest (lower = more CPU for game loop)")]
-        public int questMaxTrainingSPS = 30;
-
-        [Tooltip("Training batch size on Quest (smaller = faster per training step)")]
+        [Header("Quest SAC Overrides")]
+        [Tooltip("Training batch size on Quest")]
         public int questBatchSize = 128;
 
-        [Header("Action Smoothing")]
-        [Tooltip("Exponential smoothing factor. 0=no smoothing (instant), 1=fully smoothed (frozen). " +
-            "Smoothed action = alpha * prev + (1-alpha) * new. Prevents chaotic torque oscillation.")]
-        [Range(0f, 0.95f)]
-        public float actionSmoothingAlpha = 0.5f;
-
-        [Header("Reward Scaling")]
-        [Tooltip("Multiplier for raw reward before storing in replay buffer. " +
-            "Must be large enough that the task reward signal is comparable to SAC's " +
-            "entropy bonus (alpha * dim). With 54 active dims and alpha=0.10, " +
-            "entropy is ~4/step, so reward should be ≥5/step.")]
-        [Range(1f, 200f)]
-        public float rewardScale = 50f;
-
-        [Header("Persistence")]
-        [Tooltip("Auto-save every N minutes (0 = disabled)")]
-        public float autoSaveMinutes = 1f;
-
-        [Tooltip("Save subdirectory under persistentDataPath")]
-        public string saveSubdirectory = "ContinuousLearning";
-
-        [Tooltip("Delete all saved state on next Play. Use when model architecture changes. Auto-resets after deletion.")]
-        public bool deleteSavesOnStart;
-
         [Header("Action Curriculum")]
-        [Tooltip("Enable progressive action curriculum — unlock joints in stages as competency grows")]
+        [Tooltip("Enable progressive action curriculum — unlock joints in stages")]
         public bool enableCurriculum = true;
 
         [Header("Assisted Poses")]
-        [Tooltip("Periodically teleport to reference clip poses when stuck in Fallen phase. " +
-            "Like a parent picking up a baby — gives the agent experience of being upright.")]
+        [Tooltip("Periodically teleport to reference poses when stuck fallen.")]
         public bool enableAssistedPoses = true;
 
-        [Tooltip("Base seconds in Fallen phase before teleporting to a reference pose.")]
+        [Tooltip("Base seconds in Fallen phase before teleporting.")]
         [Range(5f, 300f)]
         public float assistIntervalSeconds = 30f;
 
-        [Tooltip("Extra seconds added per assist. Interval = base + annealRate * assistCount. " +
-            "Gives the agent progressively longer practice between teleports.")]
+        [Tooltip("Extra seconds added per assist (annealing).")]
         [Range(0f, 30f)]
         public float assistAnnealRate = 5f;
 
@@ -123,49 +62,23 @@ namespace Genesis.Sentience.Learning
         [Range(30f, 600f)]
         public float assistMaxInterval = 300f;
 
-        [Tooltip("Random noise added to joint angles after teleport (radians). Varies the starting condition.")]
+        [Tooltip("Random noise added to joint angles after teleport (radians).")]
         [Range(0f, 0.1f)]
         public float assistPoseNoise = 0.02f;
 
-        [Tooltip("Decision steps to hold pose with zero torques after teleport. " +
-            "Joint stiffness/damping keeps the synth roughly upright, giving the agent " +
-            "several high-reward transitions to learn from.")]
+        [Tooltip("Decision steps to hold pose with zero torques after teleport.")]
         [Range(0, 600)]
         public int assistHoldFrames = 150;
 
-        // --- ISynthSkill ---
-        public string Name => "ContinuousLearning";
-        public bool IsReady => _initialized;
-        public int FrameSkip => frameSkip;
+        // ── ISynthSkill ─────────────────────────────────────────────────
 
-        // --- Internal state ---
-        private bool _initialized;
-        private bool _initFailed;
-        private bool _isMobile;
+        public override string Name => "ContinuousLearning";
 
-        private SynthProprioception _proprioSense;
-        private SynthContact _contact;
-        private float _bodyWeight;
-        private BoneFilterConfig _filter;
+        // ── Internal state ──────────────────────────────────────────────
 
-        private SACAgent _agent;
-        private ReplayBuffer _replayBuffer;
         private ContinuingReward _reward;
-        private ObservationNormalizer _obsNormalizer;
-        private TrainingThread _trainingThread;
-        private StatePersister _persister;
         private ActionCurriculum _curriculum;
-
-        // Pre-allocated buffers (zero-allocation Act() hot path)
-        private float[] _normalizedObs;
-        private float[] _prevObs;
-        private float[] _prevAction;
-        private float[] _smoothedAction;
-        private int _physicsObsDim;
-        private bool _hasPrevTransition;
-        private int _totalDecisions;
-        private Random _rng;
-        private float _lastAutoSaveTime;
+        private float _bodyWeight;
 
         // Assisted pose state
         private double[] _standingQpos;
@@ -177,393 +90,261 @@ namespace Genesis.Sentience.Learning
         private int _assistHoldRemaining;
         private float[] _zeroAction;
 
-        // Async save state
-        private volatile bool _saveInProgress;
-        private volatile bool _quitSaveStarted;
-        private volatile bool _quitSaveFinished;
+        // ── Diagnostics ─────────────────────────────────────────────────
 
-        // Frame time tracking for adaptive training throttle
-        private volatile float _lastFrameMs;
-
-        // Live metrics for dashboard
-        private TrainingMetrics _metrics;
-        private float _lastMetricsSampleTime;
-        private const float METRICS_SAMPLE_INTERVAL = 0.1f; // 10 Hz
-
-        // --- Diagnostics ---
-        public bool IsMobile => _isMobile;
-        public int TotalDecisions => _totalDecisions;
-        public int ReplayBufferCount => _replayBuffer?.Count ?? 0;
         public AgentPhase CurrentPhase => _reward?.LastPhase ?? AgentPhase.Fallen;
         public float RawReward => _reward?.LastRawReward ?? 0f;
         public float CenteredReward => _reward?.LastCenteredReward ?? 0f;
         public float RewardBar => _reward?.RewardBar ?? 0f;
         public float NearestFrameDistance => _reward?.LastNearestFrameDistance ?? 0f;
-        public float Alpha => _agent?.Alpha ?? 0f;
-        public float LastQLoss => _agent?.LastQLoss ?? 0f;
-        public float LastActorLoss => _agent?.LastActorLoss ?? 0f;
-        public int TrainSteps => _agent?.TrainSteps ?? 0;
-        public float TrainingSPS => _trainingThread?.SPS ?? 0f;
-        public bool SaveInProgress => _saveInProgress;
+        public float Alpha => SACTrainer?.Agent?.Alpha ?? 0f;
+        public float LastQLoss => SACTrainer?.Agent?.LastQLoss ?? 0f;
+        public float LastActorLoss => SACTrainer?.Agent?.LastActorLoss ?? 0f;
+        public int TrainSteps => SACTrainer?.Agent?.TrainSteps ?? 0;
+        public float TrainingSPS => _trainer?.StepsPerSecond ?? 0;
+        public int ReplayBufferCount => _trainer?.ExperienceCount ?? 0;
         public int AssistCount => _assistCount;
         public float FallenTimer => _fallenTimer;
         public int AssistHoldRemaining => _assistHoldRemaining;
         public float AssistEffectiveInterval => Mathf.Min(
-            assistIntervalSeconds + assistAnnealRate * _assistCount,
-            assistMaxInterval);
+            assistIntervalSeconds + assistAnnealRate * _assistCount, assistMaxInterval);
         public int CurriculumStage => _curriculum?.CurrentStage ?? -1;
         public int CurriculumActiveJoints => _curriculum?.ActiveActionDim ?? 0;
-        public TrainingMetrics Metrics => _metrics;
 
-        public unsafe bool Initialize()
+        private SACSkillTrainer SACTrainer => _trainer as SACSkillTrainer;
+
+        // ── BaseTrainingSkill hooks ─────────────────────────────────────
+
+        protected override ISkillTrainer CreateTrainer()
         {
-            if (_initialized) return true;
-            if (_initFailed) return false;
-
-            if (_proprioSense == null)
-            {
-                _proprioSense = GetComponent<SynthProprioception>();
-                if (_proprioSense == null)
-                    _proprioSense = GetComponentInParent<SynthProprioception>();
-            }
-            if (_proprioSense == null || !_proprioSense.IsReady)
-                return false;
-
-            if (!MjScene.InstanceExists || MjScene.Instance.Model == null)
-                return false;
-
-            _filter = _proprioSense.Filter;
-            if (!_filter.IsValid)
-                return false;
-
-            _physicsObsDim = _filter.physicsObsDim;
-            int actDim = _filter.actDim;
-            int obsDim = _physicsObsDim + actDim;
-
-            Device device;
-            try
-            {
-                if (preferMPS && torch.mps_is_available())
-                {
-                    device = torch.device("mps");
-                    Debug.Log("ContinuousLearningSkill: Using MPS (Metal) for training");
-                }
-                else
-                {
-                    device = torch.CPU;
-                    Debug.Log("ContinuousLearningSkill: Using CPU for training");
-                }
-            }
-            catch
-            {
-                device = torch.CPU;
-                Debug.Log("ContinuousLearningSkill: MPS check failed, using CPU");
-            }
-
-            // Apply mobile overrides before creating the agent
-#if UNITY_ANDROID && !UNITY_EDITOR
-            _isMobile = true;
-#endif
-            if (_isMobile && autoDetectMobile)
-            {
-                frameSkip = questFrameSkip;
-                maxTrainingSPS = questMaxTrainingSPS;
-                sacConfig.BatchSize = questBatchSize;
-                Debug.Log($"ContinuousLearningSkill: Mobile detected — " +
-                    $"frameSkip={frameSkip}, maxSPS={maxTrainingSPS}, " +
-                    $"batch={sacConfig.BatchSize}, hidden={sacConfig.Hidden1}" +
-                    " (unified network, model portable across devices)");
-            }
-
-            try
-            {
-                var sw = Stopwatch.StartNew();
-
-                _agent = new SACAgent(obsDim, actDim, sacConfig, device);
-                _replayBuffer = new ReplayBuffer(sacConfig.BufferSize, obsDim, actDim, sacConfig.PERAlpha);
-                _obsNormalizer = new ObservationNormalizer(_physicsObsDim);
-                _rng = new Random();
-                long msAgent = sw.ElapsedMilliseconds;
-
-                _normalizedObs = new float[obsDim];
-                _prevObs = new float[obsDim];
-                _prevAction = new float[actDim];
-                _smoothedAction = new float[actDim];
-
-                float standingZ = (float)MjScene.Instance.Data->qpos[2];
-
-                _reward = new ContinuingReward(
-                    standingZ,
-                    _filter.includedQposIdx,
-                    _filter.includedQvelIdx,
-                    _filter.nbody);
-                _reward.SetNearestFrameInterval(nearestFrameInterval);
-
-                _contact = GetComponent<SynthContact>();
-                if (_contact == null) _contact = GetComponentInParent<SynthContact>();
-                if (_contact == null) _contact = GetComponentInChildren<SynthContact>(true);
-
-                if (_contact != null)
-                {
-                    var mjModel = MjScene.Instance.Model;
-                    int nb = (int)mjModel->nbody;
-                    double totalMass = 0;
-                    for (int i = 0; i < nb; i++)
-                        totalMass += mjModel->body_mass[i];
-                    _bodyWeight = (float)(totalMass * 9.81);
-                    Debug.Log($"ContinuousLearningSkill: Contact rewards enabled — " +
-                        $"bodyWeight={_bodyWeight:F1}N ({totalMass:F2}kg)");
-                }
-                else
-                {
-                    Debug.LogWarning("ContinuousLearningSkill: No SynthContact found — " +
-                        "contact-based micro-rewards disabled");
-                }
-
-                long msReward = sw.ElapsedMilliseconds;
-
-                if (referenceClips != null && referenceClips.Length > 0)
-                    IndexReferenceClips();
-
-                long msMotion = sw.ElapsedMilliseconds;
-
-                _zeroAction = new float[actDim];
-
-                // Initialize progressive action curriculum
-                if (enableCurriculum)
-                {
-                    _curriculum = new ActionCurriculum();
-                    var entity = GetComponent<SynthEntity>() ?? GetComponentInParent<SynthEntity>();
-                    var boneMapper = entity?.BoneMapper;
-                    _curriculum.Initialize(MjScene.Instance.Model, _filter, boneMapper);
-                    _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
-                }
-
-                int nqInit = (int)MjScene.Instance.Model->nq;
-                _standingQpos = new double[nqInit];
-                for (int i = 0; i < nqInit; i++) _standingQpos[i] = MjScene.Instance.Data->qpos[i];
-                _assistQposBuf = new double[nqInit];
-
-                string synthName = gameObject.name;
-                _persister = new StatePersister(
-                    Path.Combine(Application.persistentDataPath, saveSubdirectory, synthName));
-
-                if (deleteSavesOnStart)
-                {
-                    _persister.DeleteAll();
-                    deleteSavesOnStart = false;
-                    Debug.Log("ContinuousLearningSkill: Deleted saved state (deleteSavesOnStart was checked)");
-                    #if UNITY_EDITOR
-                    UnityEditor.EditorUtility.SetDirty(this);
-                    #endif
-                }
-
-                if (_persister.HasSavedState())
-                {
-                    try
-                    {
-                        _persister.Load(_agent, _replayBuffer, _obsNormalizer, _reward, _curriculum);
-                        _totalDecisions = _persister.LoadedDecisionCount;
-
-                        if (_persister.LoadPhysicsState(MjScene.Instance.Data))
-                        {
-                            MujocoLib.mj_forward(MjScene.Instance.Model, MjScene.Instance.Data);
-                            Debug.Log("ContinuousLearningSkill: Physics state restored");
-                        }
-
-                        if (enableCurriculum && _curriculum != null)
-                            _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
-
-                        Debug.Log($"ContinuousLearningSkill: Restored state — " +
-                                  $"{_totalDecisions} decisions, {_replayBuffer.Count} replay entries");
-                    }
-                    catch (Exception loadEx)
-                    {
-                        Debug.LogWarning($"ContinuousLearningSkill: Saved state corrupted " +
-                            $"({loadEx.GetType().Name}: {loadEx.Message}). " +
-                            $"Deleting and starting fresh.");
-                        _persister.DeleteAll();
-
-                        // Recreate agent and buffer to ensure clean state
-                        _agent.Dispose();
-                        _agent = new SACAgent(obsDim, actDim, sacConfig, device);
-                        _replayBuffer = new ReplayBuffer(sacConfig.BufferSize, obsDim, actDim, sacConfig.PERAlpha);
-                        _obsNormalizer = new ObservationNormalizer(_physicsObsDim);
-                        _totalDecisions = 0;
-                    }
-                }
-
-                long msState = sw.ElapsedMilliseconds;
-
-                _trainingThread = new TrainingThread(_agent, _replayBuffer, sacConfig, learningStarts, _isMobile);
-                _trainingThread.MaxStepsPerSecond = maxTrainingSPS;
-                _trainingThread.Start();
-
-                _metrics = new TrainingMetrics();
-
-                Debug.Log($"ContinuousLearningSkill: Init timing — " +
-                    $"agent+buffer={msAgent}ms, reward={msReward - msAgent}ms, " +
-                    $"motion={msMotion - msReward}ms, state={msState - msMotion}ms, " +
-                    $"total={sw.ElapsedMilliseconds}ms");
-            }
-            catch (Exception e)
-            {
-                var inner = e;
-                while (inner.InnerException != null) inner = inner.InnerException;
-                Debug.LogError($"ContinuousLearningSkill: Init failed.\n" +
-                               $"  Outer: {e.GetType().Name}: {e.Message}\n" +
-                               $"  Root:  {inner.GetType().Name}: {inner.Message}\n" +
-                               $"  Stack: {e.StackTrace}");
-                _initFailed = true;
-                return false;
-            }
-
-            _initialized = true;
-            _lastAutoSaveTime = Time.realtimeSinceStartup;
-
-            Debug.Log($"ContinuousLearningSkill: Initialized — " +
-                      $"obs_dim={obsDim}, act_dim={actDim}, " +
-                      $"frameSkip={frameSkip}, " +
-                      $"maxTrainSPS={maxTrainingSPS}, " +
-                      $"refs={referenceClips?.Length ?? 0} clips, " +
-                      $"device={device}");
-
-            return true;
+            return new SACSkillTrainer(sacConfig, learningStarts, _isMobile);
         }
 
-        /// <summary>
-        /// Zero-allocation hot path: normalize into pre-allocated buffer,
-        /// compute reward, add to replay, get action.
-        /// </summary>
-        public unsafe float[] Act()
+        protected override (int obsDim, int actDim) GetDimensions()
         {
-            if (!_initialized || _proprioSense == null || !_proprioSense.IsReady)
-                return null;
+            int physObs = _filter.physicsObsDim;
+            int actDim = _filter.actDim;
+            return (physObs + actDim, actDim);
+        }
 
-            var rawObs = _proprioSense.GetObservation();
-            if (rawObs == null || rawObs.Length == 0)
-                return null;
+        protected override void ApplyMobileOverrides()
+        {
+            sacConfig.BatchSize = questBatchSize;
+            Debug.Log($"ContinuousLearning: Mobile — batch={sacConfig.BatchSize}");
+        }
 
-            if (rawObs.Length != _physicsObsDim)
+        protected override unsafe void OnSkillInitialize()
+        {
+            int actDim = _filter.actDim;
+            float standingZ = (float)MjScene.Instance.Data->qpos[2];
+
+            _reward = new ContinuingReward(
+                standingZ,
+                _filter.includedQposIdx,
+                _filter.includedQvelIdx,
+                _filter.nbody);
+            _reward.SetNearestFrameInterval(nearestFrameInterval);
+
+            if (_contact != null)
             {
-                Debug.LogError($"ContinuousLearningSkill: obs dimension mismatch — " +
-                    $"rawObs.Length={rawObs.Length}, expected _physicsObsDim={_physicsObsDim}. " +
-                    $"Filter may have changed since init.");
-                return null;
+                var mjModel = MjScene.Instance.Model;
+                int nb = (int)mjModel->nbody;
+                double totalMass = 0;
+                for (int i = 0; i < nb; i++)
+                    totalMass += mjModel->body_mass[i];
+                _bodyWeight = (float)(totalMass * 9.81);
+                Debug.Log($"ContinuousLearning: Contact rewards enabled — " +
+                    $"bodyWeight={_bodyWeight:F1}N ({totalMass:F2}kg)");
             }
 
-            // Normalize physics obs into first part of buffer, then append smoothed prev action
-            _obsNormalizer.NormalizeAndUpdateInPlace(rawObs, _normalizedObs);
+            if (referenceClips != null && referenceClips.Length > 0)
+                IndexReferenceClips();
+
+            _zeroAction = new float[actDim];
+
+            if (enableCurriculum)
+            {
+                _curriculum = new ActionCurriculum();
+                _curriculum.Initialize(MjScene.Instance.Model, _filter, _entity?.BoneMapper);
+                SACTrainer?.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
+            }
+
+            int nq = (int)MjScene.Instance.Model->nq;
+            _standingQpos = new double[nq];
+            for (int i = 0; i < nq; i++) _standingQpos[i] = MjScene.Instance.Data->qpos[i];
+            _assistQposBuf = new double[nq];
+        }
+
+        protected override float[] BuildFullObs(float[] normalizedPhysicsObs)
+        {
             Buffer.BlockCopy(_smoothedAction, 0, _normalizedObs,
                 _physicsObsDim * sizeof(float), _smoothedAction.Length * sizeof(float));
+            return _normalizedObs;
+        }
 
-            // Store previous transition
-            if (_hasPrevTransition)
+        protected override unsafe float ComputeReward()
+        {
+            float meanStrain = _proprioSense.Strain?.MeanStrain() ?? 0f;
+            return _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
+                meanStrain, _contact, _bodyWeight);
+        }
+
+        protected override void OnTransitionStored(float reward, bool done)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (_metrics != null)
             {
-                float meanStrain = _proprioSense.Strain?.MeanStrain() ?? 0f;
-                float reward = _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
-                    meanStrain, _contact, _bodyWeight) * rewardScale;
-                _replayBuffer.Add(_prevObs, _prevAction, reward, _normalizedObs);
-
-                float now = Time.realtimeSinceStartup;
-                if (_metrics != null && now - _lastMetricsSampleTime >= METRICS_SAMPLE_INTERVAL)
-                {
-                    _metrics.Sample(
-                        in _reward.LastSnapshot,
-                        _agent.Alpha, _agent.LastQLoss, _agent.LastActorLoss, _agent.LastAlphaLoss,
-                        _trainingThread?.SPS ?? 0f, _replayBuffer.Count,
-                        _curriculum?.CurrentStage ?? -1, _curriculum?.ActiveActionDim ?? 0);
-                    _lastMetricsSampleTime = now;
-                }
+                var agent = SACTrainer?.Agent;
+                _metrics.Sample(
+                    in _reward.LastSnapshot,
+                    agent?.Alpha ?? 0f,
+                    agent?.LastQLoss ?? 0f,
+                    agent?.LastActorLoss ?? 0f,
+                    agent?.LastAlphaLoss ?? 0f,
+                    _trainer?.StepsPerSecond ?? 0f,
+                    _trainer?.ExperienceCount ?? 0,
+                    _curriculum?.CurrentStage ?? -1,
+                    _curriculum?.ActiveActionDim ?? 0);
             }
+        }
 
-            // Assisted hold: physically pin the synth in the assisted pose each frame.
-            // Re-sets qpos/qvel so gravity can't pull it down. Transitions are stored
-            // so the agent learns the value of being upright (action=0, reward=high).
+        protected override void PostProcessAction(float[] rawAction)
+        {
+            _curriculum?.MaskActions(rawAction);
+
+            if (_curriculum != null && _reward != null)
+            {
+                if (_curriculum.Step(_reward.LastPhase))
+                    SACTrainer?.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
+            }
+        }
+
+        protected override bool ShouldSkipDecision()
+        {
+            return _assistHoldRemaining > 0 || ShouldTeleportAssist();
+        }
+
+        protected override float[] OnSkipDecision()
+        {
             if (_assistHoldRemaining > 0)
             {
                 _assistHoldRemaining--;
                 ResetToHeldPose();
 
-                Buffer.BlockCopy(_normalizedObs, 0, _prevObs, 0, _normalizedObs.Length * sizeof(float));
-                Buffer.BlockCopy(_zeroAction, 0, _prevAction, 0, _zeroAction.Length * sizeof(float));
+                Buffer.BlockCopy(_normalizedObs, 0, _prevObs, 0,
+                    _normalizedObs.Length * sizeof(float));
+                Buffer.BlockCopy(_zeroAction, 0, _prevAction, 0,
+                    _zeroAction.Length * sizeof(float));
                 _hasPrevTransition = true;
                 _totalDecisions++;
 
                 return _zeroAction;
             }
 
-            // Assisted poses: teleport when stuck fallen too long (wall-clock time)
-            // Interval anneals: base + annealRate * assistCount, capped at max
-            if (enableAssistedPoses)
-            {
-                bool isFallen = _reward.LastPhase == AgentPhase.Fallen;
-                if (isFallen && !_wasFallen)
-                    _lastFallenStartTime = Time.realtimeSinceStartup;
-
-                _wasFallen = isFallen;
-                _fallenTimer = isFallen
-                    ? Time.realtimeSinceStartup - _lastFallenStartTime
-                    : 0f;
-
-                float effectiveInterval = Mathf.Min(
-                    assistIntervalSeconds + assistAnnealRate * _assistCount,
-                    assistMaxInterval);
-
-                if (_fallenTimer >= effectiveInterval && _assistQposBuf != null)
-                {
-                    TeleportToAssistedPose();
-                    _lastFallenStartTime = Time.realtimeSinceStartup;
-                    return null;
-                }
-            }
-
-            // Get action (writes into agent's pre-allocated _actionBuffer)
-            float[] rawAction;
-            if (_totalDecisions < learningStarts)
-                rawAction = _agent.GetRandomAction(_rng);
-            else
-                rawAction = _agent.GetAction(_normalizedObs);
-
-            // Apply curriculum mask (zero out inactive joints)
-            _curriculum?.MaskActions(rawAction);
-
-            // Step curriculum and check for stage advancement
-            if (_curriculum != null && _reward != null)
-            {
-                if (_curriculum.Step(_reward.LastPhase))
-                    _agent.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
-            }
-
-            // Exponential action smoothing: prevents chaotic torque oscillation
-            float a = actionSmoothingAlpha;
-            float b = 1f - a;
-            for (int i = 0; i < rawAction.Length; i++)
-                _smoothedAction[i] = a * _smoothedAction[i] + b * rawAction[i];
-
-            // Save for next transition (copy into our pre-allocated buffers)
-            Buffer.BlockCopy(_normalizedObs, 0, _prevObs, 0, _normalizedObs.Length * sizeof(float));
-            Buffer.BlockCopy(_smoothedAction, 0, _prevAction, 0, _smoothedAction.Length * sizeof(float));
-            _hasPrevTransition = true;
-            _totalDecisions++;
-
-            // Auto-save (async, non-blocking)
-            if (autoSaveMinutes > 0 &&
-                Time.realtimeSinceStartup - _lastAutoSaveTime > autoSaveMinutes * 60f)
-            {
-                RequestAsyncSave();
-                _lastAutoSaveTime = Time.realtimeSinceStartup;
-            }
-
-            return _smoothedAction;
+            // Teleport
+            TeleportToAssistedPose();
+            _lastFallenStartTime = Time.realtimeSinceStartup;
+            return null;
         }
 
-        public void AdvanceTime(float dt) { }
-        public void Reset() { }
+        private bool ShouldTeleportAssist()
+        {
+            if (!enableAssistedPoses) return false;
+
+            bool isFallen = _reward.LastPhase == AgentPhase.Fallen;
+            if (isFallen && !_wasFallen)
+                _lastFallenStartTime = Time.realtimeSinceStartup;
+
+            _wasFallen = isFallen;
+            _fallenTimer = isFallen
+                ? Time.realtimeSinceStartup - _lastFallenStartTime
+                : 0f;
+
+            float effectiveInterval = Mathf.Min(
+                assistIntervalSeconds + assistAnnealRate * _assistCount,
+                assistMaxInterval);
+
+            return _fallenTimer >= effectiveInterval && _assistQposBuf != null;
+        }
+
+        protected override void SaveExtraState(string directory)
+        {
+            if (_reward != null)
+            {
+                BaseTrainingSkill.WriteBinaryTmpStatic(
+                    Path.Combine(directory, "reward_state.bin"),
+                    bw => _reward.Save(bw));
+            }
+            if (_curriculum != null)
+            {
+                BaseTrainingSkill.WriteBinaryTmpStatic(
+                    Path.Combine(directory, "curriculum_state.bin"),
+                    bw => _curriculum.Save(bw));
+            }
+        }
+
+        protected override void LoadExtraState(string directory)
+        {
+            string rewardPath = Path.Combine(directory, "reward_state.bin");
+            if (_reward != null && File.Exists(rewardPath))
+            {
+                using var br = new BinaryReader(File.OpenRead(rewardPath));
+                _reward.Load(br);
+            }
+
+            string currPath = Path.Combine(directory, "curriculum_state.bin");
+            if (_curriculum != null && File.Exists(currPath))
+            {
+                try
+                {
+                    using var br = new BinaryReader(File.OpenRead(currPath));
+                    _curriculum.Load(br);
+                    SACTrainer?.SetTargetEntropy(_curriculum.ActiveActionDim, sacConfig.TargetEntropyScale);
+                    Debug.Log($"ContinuousLearning: Loaded curriculum — stage {_curriculum.CurrentStage}");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"ContinuousLearning: Curriculum load failed ({e.Message}), starting from stage 0");
+                }
+            }
+        }
+
+        public override Dictionary<string, float> GetDiagnostics()
+        {
+            var d = new Dictionary<string, float>();
+            var agent = SACTrainer?.Agent;
+            if (agent != null)
+            {
+                d["alpha"] = agent.Alpha;
+                d["qLoss"] = agent.LastQLoss;
+                d["actorLoss"] = agent.LastActorLoss;
+                d["alphaLoss"] = agent.LastAlphaLoss;
+            }
+            if (_reward != null)
+            {
+                d["rawReward"] = _reward.LastRawReward;
+                d["rewardBar"] = _reward.RewardBar;
+                d["phase"] = (float)_reward.LastPhase;
+            }
+            if (_curriculum != null)
+            {
+                d["currStage"] = _curriculum.CurrentStage;
+                d["activeJoints"] = _curriculum.ActiveActionDim;
+            }
+            d["assistCount"] = _assistCount;
+            d["fallenTimer"] = _fallenTimer;
+            return d;
+        }
+
+        protected override void OnSkillValidate()
+        {
+            if (sacConfig == null) sacConfig = new SACConfig();
+        }
+
+        // ── Assisted Poses ──────────────────────────────────────────────
 
         private unsafe void TeleportToAssistedPose()
         {
-            // Alternate between standing pose and random reference frames
             bool useStanding = !_reward.HasReferenceFrames || (_assistCount % 3 == 0);
             string poseDesc;
 
@@ -581,13 +362,13 @@ namespace Genesis.Sentience.Learning
 
             var data = MjScene.Instance.Data;
             var model = MjScene.Instance.Model;
-            _assistQposBuf[0] = data->qpos[0]; // root X
-            _assistQposBuf[1] = data->qpos[1]; // root Y
+            _assistQposBuf[0] = data->qpos[0];
+            _assistQposBuf[1] = data->qpos[1];
 
             if (assistPoseNoise > 0f)
             {
                 for (int i = 7; i < _assistQposBuf.Length; i++)
-                    _assistQposBuf[i] += ((_rng.NextDouble() * 2.0 - 1.0) * assistPoseNoise);
+                    _assistQposBuf[i] += (_rng.NextDouble() * 2.0 - 1.0) * assistPoseNoise;
             }
 
             int nq = Math.Min(_assistQposBuf.Length, (int)model->nq);
@@ -605,25 +386,14 @@ namespace Genesis.Sentience.Learning
             _assistHoldRemaining = assistHoldFrames;
             _assistCount++;
 
-            double jointSumSq = 0;
-            for (int i = 7; i < _assistQposBuf.Length; i++)
-            {
-                double d = _assistQposBuf[i] - _standingQpos[i];
-                jointSumSq += d * d;
-            }
-            float diffFromStanding = (float)Math.Sqrt(jointSumSq);
             float nextInterval = Mathf.Min(
                 assistIntervalSeconds + assistAnnealRate * _assistCount,
                 assistMaxInterval);
             Debug.Log($"[ContinuousLearning] Assisted pose #{_assistCount} — {poseDesc}, " +
-                $"holding {assistHoldFrames} steps, diffFromStanding={diffFromStanding:F3}, " +
-                $"rootZ={_assistQposBuf[2]:F3}, nextInterval={nextInterval:F0}s");
+                $"holding {assistHoldFrames} steps, rootZ={_assistQposBuf[2]:F3}, " +
+                $"nextInterval={nextInterval:F0}s");
         }
 
-        /// <summary>
-        /// Re-applies the held pose each frame during assistHoldRemaining countdown.
-        /// Resets qpos to _assistQposBuf and zeros qvel so the synth stays pinned.
-        /// </summary>
         private unsafe void ResetToHeldPose()
         {
             var data = MjScene.Instance.Data;
@@ -644,6 +414,8 @@ namespace Genesis.Sentience.Learning
             MujocoLib.mj_forward(model, data);
         }
 
+        // ── Reference Motion Indexing ───────────────────────────────────
+
         private const int MOTION_CACHE_VERSION = 3;
 
         private unsafe void IndexReferenceClips()
@@ -652,12 +424,12 @@ namespace Genesis.Sentience.Learning
             if (cachePath != null && TryLoadMotionCache(cachePath))
                 return;
 
-            var humanoidRoot = ResolveHumanoidRoot();
+            var humanoidRoot = _entity != null ? _entity.gameObject : gameObject;
             var extractor = new MotionClipExtractor();
             var motionData = new MotionReferenceData[referenceClips.Length];
-            var extractSw = Stopwatch.StartNew();
+            var sw = Stopwatch.StartNew();
 
-            Debug.Log($"ContinuousLearningSkill: Extracting {referenceClips.Length} clips (no valid cache)...");
+            Debug.Log($"ContinuousLearning: Extracting {referenceClips.Length} clips...");
             for (int i = 0; i < referenceClips.Length; i++)
             {
                 if (referenceClips[i] == null) continue;
@@ -665,8 +437,8 @@ namespace Genesis.Sentience.Learning
                     referenceClips[i], humanoidRoot, MjScene.Instance.Model,
                     extractionFps, clipsAreLooping, Array.Empty<string>());
                 if ((i + 1) % 10 == 0 || i == referenceClips.Length - 1)
-                    Debug.Log($"ContinuousLearningSkill: Extracted {i + 1}/{referenceClips.Length} clips " +
-                        $"({extractSw.ElapsedMilliseconds}ms)");
+                    Debug.Log($"ContinuousLearning: Extracted {i + 1}/{referenceClips.Length} " +
+                        $"({sw.ElapsedMilliseconds}ms)");
             }
 
             int validCount = 0;
@@ -676,8 +448,7 @@ namespace Genesis.Sentience.Learning
             var validData = new MotionReferenceData[validCount];
             int idx = 0;
             for (int i = 0; i < motionData.Length; i++)
-                if (motionData[i] != null)
-                    validData[idx++] = motionData[i];
+                if (motionData[i] != null) validData[idx++] = motionData[i];
 
             _reward.IndexMotionClips(validData, matchingFps);
 
@@ -687,11 +458,8 @@ namespace Genesis.Sentience.Learning
                 if (uniquePoses >= 2)
                     SaveMotionCache(cachePath);
                 else
-                    Debug.LogWarning($"ContinuousLearningSkill: Not caching — " +
-                        $"only {uniquePoses} unique poses (extraction likely failed)");
+                    Debug.LogWarning($"ContinuousLearning: Not caching — only {uniquePoses} unique poses");
             }
-            else if (cachePath != null)
-                Debug.LogWarning("ContinuousLearningSkill: Not caching — reference data appears invalid");
         }
 
         private string GetMotionCachePath()
@@ -734,17 +502,17 @@ namespace Genesis.Sentience.Learning
 
                 if (_reward.NumReferenceFrames < 2)
                 {
-                    Debug.LogWarning("ContinuousLearningSkill: Cached data has < 2 frames, discarding");
+                    Debug.LogWarning("ContinuousLearning: Cached data has < 2 frames, discarding");
                     return false;
                 }
 
-                Debug.Log($"ContinuousLearningSkill: Loaded motion cache — " +
-                    $"{_reward.NumReferenceFrames} frames from {path}");
+                Debug.Log($"ContinuousLearning: Loaded motion cache — " +
+                    $"{_reward.NumReferenceFrames} frames");
                 return true;
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"ContinuousLearningSkill: Motion cache load failed — {e.Message}");
+                Debug.LogWarning($"ContinuousLearning: Motion cache load failed — {e.Message}");
                 return false;
             }
         }
@@ -758,220 +526,12 @@ namespace Genesis.Sentience.Learning
                 using var bw = new BinaryWriter(fs);
                 bw.Write(MOTION_CACHE_VERSION);
                 _reward.SaveReferenceIndex(bw);
-                Debug.Log($"ContinuousLearningSkill: Saved motion cache — " +
-                    $"{_reward.NumReferenceFrames} frames to {path}");
+                Debug.Log($"ContinuousLearning: Saved motion cache — {_reward.NumReferenceFrames} frames");
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"ContinuousLearningSkill: Motion cache save failed — {e.Message}");
+                Debug.LogWarning($"ContinuousLearning: Motion cache save failed — {e.Message}");
             }
         }
-
-        private GameObject ResolveHumanoidRoot()
-        {
-            var entity = GetComponent<SynthEntity>();
-            if (entity != null) return entity.gameObject;
-            entity = GetComponentInParent<SynthEntity>();
-            if (entity != null) return entity.gameObject;
-            return gameObject;
-        }
-
-        /// <summary>
-        /// Non-blocking save: pauses training, snapshots physics on main thread,
-        /// then writes everything to disk on a background task.
-        /// </summary>
-        private void RequestAsyncSave()
-        {
-            if (_saveInProgress || !_initialized || _persister == null) return;
-            _saveInProgress = true;
-
-            // Pause training so buffer/agent state is consistent
-            _trainingThread?.Pause();
-
-            double[] qposSnap = null, qvelSnap = null, ctrlSnap = null;
-            try
-            {
-                unsafe
-                {
-                    if (MjScene.InstanceExists && MjScene.Instance.Data != null && MjScene.Instance.Model != null)
-                    {
-                        var data = MjScene.Instance.Data;
-                        var model = MjScene.Instance.Model;
-                        int nq = (int)model->nq;
-                        int nv = (int)model->nv;
-                        int nu = (int)model->nu;
-                        qposSnap = new double[nq];
-                        qvelSnap = new double[nv];
-                        ctrlSnap = new double[nu];
-                        for (int i = 0; i < nq; i++) qposSnap[i] = data->qpos[i];
-                        for (int i = 0; i < nv; i++) qvelSnap[i] = data->qvel[i];
-                        for (int i = 0; i < nu; i++) ctrlSnap[i] = data->ctrl[i];
-                    }
-                }
-            }
-            catch { }
-
-            int decisions = _totalDecisions;
-
-            // Fire off background save
-            Task.Run(() =>
-            {
-                try
-                {
-                    _persister.SaveWithSnapshot(_agent, _replayBuffer, _obsNormalizer,
-                        _reward, decisions, qposSnap, qvelSnap, ctrlSnap, _curriculum);
-                }
-                catch (Exception e)
-                {
-                    UnityEngine.Debug.LogError($"ContinuousLearningSkill: Async save failed — {e.Message}");
-                }
-                finally
-                {
-                    // Reclaim save-path temporaries while training is still paused
-                    // (the pause makes this "free" — no frame impact).
-                    if (_isMobile)
-                        GC.Collect(0, GCCollectionMode.Optimized);
-
-                    _trainingThread?.Resume();
-                    _saveInProgress = false;
-                }
-            });
-        }
-
-        /// <summary>
-        /// Public trigger for manual save (e.g. from Inspector button).
-        /// Always async, never blocks.
-        /// </summary>
-        public void SaveState()
-        {
-            RequestAsyncSave();
-        }
-
-        void OnEnable()
-        {
-            Application.wantsToQuit += OnWantsToQuit;
-        }
-
-        void OnDisable()
-        {
-            Application.wantsToQuit -= OnWantsToQuit;
-            if (_initialized && !_saveInProgress)
-                RequestAsyncSave();
-        }
-
-        void OnApplicationPause(bool pause)
-        {
-            if (pause && _initialized && !_saveInProgress)
-                RequestAsyncSave();
-        }
-
-        /// <summary>
-        /// Intercept quit: fire async save, defer quit until done.
-        /// Unity calls this before actually quitting. Returning false
-        /// cancels the quit; we re-request quit once save finishes.
-        /// </summary>
-        private bool OnWantsToQuit()
-        {
-            if (!_initialized || _persister == null) return true;
-
-            if (!_saveInProgress && !_quitSaveStarted)
-            {
-                _quitSaveStarted = true;
-                _trainingThread?.Pause();
-
-                double[] qposSnap = null, qvelSnap = null, ctrlSnap = null;
-                try
-                {
-                    unsafe
-                    {
-                        if (MjScene.InstanceExists && MjScene.Instance.Data != null && MjScene.Instance.Model != null)
-                        {
-                            var data = MjScene.Instance.Data;
-                            var model = MjScene.Instance.Model;
-                            int nq = (int)model->nq;
-                            int nv = (int)model->nv;
-                            int nu = (int)model->nu;
-                            qposSnap = new double[nq];
-                            qvelSnap = new double[nv];
-                            ctrlSnap = new double[nu];
-                            for (int i = 0; i < nq; i++) qposSnap[i] = data->qpos[i];
-                            for (int i = 0; i < nv; i++) qvelSnap[i] = data->qvel[i];
-                            for (int i = 0; i < nu; i++) ctrlSnap[i] = data->ctrl[i];
-                        }
-                    }
-                }
-                catch { }
-
-                int decisions = _totalDecisions;
-                _saveInProgress = true;
-
-                Task.Run(() =>
-                {
-                    try
-                    {
-                        _persister.SaveWithSnapshot(_agent, _replayBuffer, _obsNormalizer,
-                            _reward, decisions, qposSnap, qvelSnap, ctrlSnap, _curriculum);
-                        Debug.Log($"ContinuousLearningSkill: Quit save complete — {decisions} decisions");
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.LogError($"ContinuousLearningSkill: Quit save failed — {e.Message}");
-                    }
-                    finally
-                    {
-                        _saveInProgress = false;
-                        _quitSaveFinished = true;
-                    }
-                });
-
-                // Cancel quit for now, we'll re-request after save
-                return false;
-            }
-
-            if (_saveInProgress && !_quitSaveFinished)
-                return false; // still saving, keep deferring
-
-            return true; // save done, allow quit
-        }
-
-        void Update()
-        {
-            _lastFrameMs = Time.unscaledDeltaTime * 1000f;
-            if (_trainingThread != null)
-                _trainingThread.LastFrameMs = _lastFrameMs;
-
-            // Re-trigger quit after async save completes
-            if (_quitSaveFinished)
-            {
-                _quitSaveFinished = false;
-                #if UNITY_EDITOR
-                UnityEditor.EditorApplication.isPlaying = false;
-                #else
-                Application.Quit();
-                #endif
-            }
-        }
-
-        void OnDestroy()
-        {
-            // Wait for any in-flight async save before disposing
-            int waitMs = 0;
-            while (_saveInProgress && waitMs < 5000)
-            {
-                Thread.Sleep(10);
-                waitMs += 10;
-            }
-
-            _trainingThread?.Stop();
-            _agent?.Dispose();
-        }
-
-        #if UNITY_EDITOR
-        void OnValidate()
-        {
-            if (sacConfig == null)
-                sacConfig = new SACConfig();
-        }
-        #endif
     }
 }

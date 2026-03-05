@@ -519,6 +519,11 @@ namespace Genesis.Sentience.Learning
 
         private static void WriteBinaryTmp(string finalPath, Action<BinaryWriter> write)
         {
+            WriteBinaryTmpStatic(finalPath, write);
+        }
+
+        internal static void WriteBinaryTmpStatic(string finalPath, Action<BinaryWriter> write)
+        {
             string tmpPath = finalPath + ".tmp";
             using var fs = new FileStream(tmpPath, FileMode.Create);
             using var bw = new BinaryWriter(fs);
