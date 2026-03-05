@@ -109,6 +109,7 @@ namespace Genesis.Sentience.Learning
         private volatile bool _saveInProgress;
         private volatile bool _quitSaveStarted;
         private volatile bool _quitSaveFinished;
+        private volatile bool _destroyed;
         private volatile float _lastFrameMs;
 
         protected TrainingMetrics _metrics;
@@ -334,7 +335,7 @@ namespace Genesis.Sentience.Learning
 
         public unsafe float[] Act()
         {
-            if (!_initialized || _proprioSense == null || !_proprioSense.IsReady)
+            if (_destroyed || !_initialized || _proprioSense == null || !_proprioSense.IsReady)
                 return null;
 
             // Skill-specific skip (e.g. assisted hold)
@@ -499,7 +500,7 @@ namespace Genesis.Sentience.Learning
                 finally
                 {
                     if (_isMobile) GC.Collect(0, GCCollectionMode.Optimized);
-                    _trainer.ResumeTraining();
+                    if (!_destroyed) _trainer.ResumeTraining();
                     _saveInProgress = false;
                 }
             });
@@ -601,7 +602,7 @@ namespace Genesis.Sentience.Learning
         void OnDisable()
         {
             Application.wantsToQuit -= OnWantsToQuit;
-            if (_initialized && !_saveInProgress)
+            if (_initialized && !_saveInProgress && !_destroyed)
                 RequestAsyncSave();
         }
 
@@ -664,6 +665,7 @@ namespace Genesis.Sentience.Learning
 
         void Update()
         {
+            if (_destroyed) return;
             _lastFrameMs = Time.unscaledDeltaTime * 1000f;
             if (_trainer is BaseSkillTrainer bst)
                 bst.LastFrameMs = _lastFrameMs;
@@ -681,6 +683,10 @@ namespace Genesis.Sentience.Learning
 
         void OnDestroy()
         {
+            _destroyed = true;
+
+            _trainer?.StopTraining();
+
             int waitMs = 0;
             while (_saveInProgress && waitMs < 5000)
             {
@@ -688,7 +694,6 @@ namespace Genesis.Sentience.Learning
                 waitMs += 10;
             }
 
-            _trainer?.StopTraining();
             _trainer?.Dispose();
         }
 
