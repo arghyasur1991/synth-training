@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -354,6 +355,12 @@ namespace Genesis.Sentience.Learning
             _obsNormalizer.NormalizeAndUpdateInPlace(rawObs, _normalizedObs);
             var fullObs = BuildFullObs(_normalizedObs);
 
+            if (ContainsNaN(fullObs))
+            {
+                Debug.LogWarning($"{Name}: NaN in observations at decision {_totalDecisions}, skipping step.");
+                return _smoothedAction;
+            }
+
             if (_hasPrevTransition)
             {
                 float reward = ComputeReward();
@@ -375,6 +382,12 @@ namespace Genesis.Sentience.Learning
                 rawAction = _trainer.GetRandomAction(_rng);
             else
                 rawAction = _trainer.GetAction(fullObs);
+
+            if (ContainsNaN(rawAction))
+            {
+                Debug.LogWarning($"{Name}: NaN detected in raw action at decision {_totalDecisions}, zeroing.");
+                Array.Clear(rawAction, 0, rawAction.Length);
+            }
 
             PostProcessAction(rawAction);
 
@@ -493,6 +506,15 @@ namespace Genesis.Sentience.Learning
         }
 
         public void SaveState() => RequestAsyncSave();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool ContainsNaN(float[] arr)
+        {
+            for (int i = 0; i < arr.Length; i++)
+                if (float.IsNaN(arr[i]) || float.IsInfinity(arr[i]))
+                    return true;
+            return false;
+        }
 
         private static unsafe void SnapshotPhysics(ref double[] qpos, ref double[] qvel, ref double[] ctrl)
         {

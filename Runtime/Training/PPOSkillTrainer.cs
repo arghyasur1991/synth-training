@@ -143,6 +143,13 @@ namespace Genesis.Sentience.Learning
                     var (pg, vl, ent, kl, cf) = _agent.UpdateStep(
                         obsT, actT, logPT, advT, retT, valT, _config);
 
+                    if (float.IsNaN(pg) || float.IsNaN(vl) || float.IsInfinity(pg))
+                    {
+                        Debug.LogWarning("PPOSkillTrainer: NaN/Inf detected in loss, skipping update round.");
+                        earlyStop = true;
+                        break;
+                    }
+
                     LastPolicyLoss = pg;
                     LastValueLoss = vl;
                     LastEntropy = ent;
