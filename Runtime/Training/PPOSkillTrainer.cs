@@ -20,6 +20,12 @@ namespace Genesis.Sentience.Learning
         private float[] _lastObs;
         private long _totalIterations;
 
+        // Reward normalization (matching CleanRL's NormalizeReward wrapper)
+        private double _retRunMean;
+        private double _retRunVar = 1.0;
+        private double _retCount = 1e-4;
+        private float _discountedReturn;
+
         // Mini-batch pre-allocated arrays
         private float[] _mbObs, _mbActions, _mbLogProbs, _mbAdvantages, _mbReturns, _mbValues;
         private int[] _batchIndices;
@@ -84,7 +90,27 @@ namespace Genesis.Sentience.Learning
         public override void StoreTransition(float[] obs, float[] action, float reward,
                                              float[] nextObs, bool done)
         {
-            _rollout.Add(obs, action, reward, done ? 1f : 0f, _lastLogProb, _lastValue);
+            float normalizedReward = NormalizeReward(reward, done);
+            normalizedReward = Math.Clamp(normalizedReward, -10f, 10f);
+            _rollout.Add(obs, action, normalizedReward, done ? 1f : 0f, _lastLogProb, _lastValue);
+        }
+
+        private float NormalizeReward(float reward, bool done)
+        {
+            _discountedReturn = _discountedReturn * _config.Gamma + reward;
+            double totalCount = _retCount + 1.0;
+            double delta = _discountedReturn - _retRunMean;
+            double newMean = _retRunMean + delta / totalCount;
+            double m2 = _retRunVar * _retCount + delta * (_discountedReturn - newMean);
+            _retRunMean = newMean;
+            _retRunVar = m2 / totalCount;
+            _retCount = totalCount;
+
+            float std = (float)Math.Sqrt(_retRunVar + 1e-8);
+            float normalized = reward / std;
+
+            if (done) _discountedReturn = 0f;
+            return normalized;
         }
 
         protected override bool ReadyToTrain() => _rollout.IsFull;
@@ -126,7 +152,7 @@ namespace Genesis.Sentience.Learning
                     int end = Math.Min(start + mbSize, numSteps);
                     int actualMb = end - start;
 
-                    _rollout.GetMiniBatch(_batchIndices, actualMb,
+                    _rollout.GetMiniBatch(_batchIndices, start, actualMb,
                         _mbObs, _mbActions, _mbLogProbs,
                         _mbAdvantages, _mbReturns, _mbValues);
 

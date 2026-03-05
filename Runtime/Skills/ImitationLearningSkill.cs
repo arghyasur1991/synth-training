@@ -480,21 +480,31 @@ namespace Genesis.Sentience.Learning
                 $"min={MinArray(_clipSuccessRates):F2}, max={MaxArray(_clipSuccessRates):F2}");
         }
 
-        private void BuildReferenceObs()
+        private unsafe void BuildReferenceObs()
         {
+            var data = MjScene.Instance.Data;
             int idx = 0;
+
+            // Relative qpos: (current - reference), naturally centered around 0
             var inclQpos = _filter.includedQposIdx;
             if (inclQpos != null)
             {
                 for (int i = 0; i < inclQpos.Length; i++)
-                    _refObsBuffer[idx++] = (float)_refQpos[inclQpos[i]];
+                {
+                    int qi = inclQpos[i];
+                    _refObsBuffer[idx++] = (float)(data->qpos[qi] - _refQpos[qi]);
+                }
             }
 
+            // Relative qvel: (current - reference)
             var inclQvel = _filter.includedQvelIdx;
             if (inclQvel != null)
             {
                 for (int i = 0; i < inclQvel.Length; i++)
-                    _refObsBuffer[idx++] = (float)_refQvel[inclQvel[i]];
+                {
+                    int vi = inclQvel[i];
+                    _refObsBuffer[idx++] = (float)(data->qvel[vi] - _refQvel[vi]);
+                }
             }
 
             float phase = _motionLibrary != null && _activeClipIndex < _motionLibrary.Length

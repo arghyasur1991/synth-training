@@ -100,13 +100,13 @@ namespace Genesis.Sentience.Learning
         /// <summary>
         /// Copy a mini-batch of data at the given indices into pre-allocated arrays.
         /// </summary>
-        public void GetMiniBatch(int[] indices, int mbSize,
+        public void GetMiniBatch(int[] indices, int indicesOffset, int mbSize,
             float[] mbObs, float[] mbActions, float[] mbLogProbs,
             float[] mbAdvantages, float[] mbReturns, float[] mbValues)
         {
             for (int i = 0; i < mbSize; i++)
             {
-                int idx = indices[i];
+                int idx = indices[indicesOffset + i];
                 Buffer.BlockCopy(_obs, idx * _obsDim * sizeof(float),
                     mbObs, i * _obsDim * sizeof(float), _obsDim * sizeof(float));
                 Buffer.BlockCopy(_actions, idx * _actDim * sizeof(float),
