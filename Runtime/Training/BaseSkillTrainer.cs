@@ -23,7 +23,7 @@ namespace Genesis.Sentience.Learning
         private readonly Stopwatch _spsWatch = new Stopwatch();
         private long _spsStepCounter;
         private float _lastTrainStepMs;
-        private const int SPS_WINDOW = 100;
+        private const double SPS_TIME_WINDOW_SEC = 2.0;
         private const int MEM_LOG_INTERVAL = 3000;
 
         public float LastGcMemMB { get; private set; }
@@ -190,11 +190,10 @@ namespace Genesis.Sentience.Learning
                     long steps = Interlocked.Increment(ref _totalSteps);
                     _spsStepCounter++;
 
-                    if (_spsStepCounter >= SPS_WINDOW)
+                    double elapsedSec = _spsWatch.Elapsed.TotalSeconds;
+                    if (elapsedSec >= SPS_TIME_WINDOW_SEC)
                     {
-                        double elapsedSec = _spsWatch.Elapsed.TotalSeconds;
-                        if (elapsedSec > 0)
-                            _sps = (float)(_spsStepCounter / elapsedSec);
+                        _sps = (float)(_spsStepCounter / elapsedSec);
                         _spsWatch.Restart();
                         _spsStepCounter = 0;
                     }

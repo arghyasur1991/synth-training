@@ -182,8 +182,6 @@ namespace Genesis.Sentience.Learning
                     LastApproxKL = kl;
                     LastClipFrac = cf;
 
-                    Interlocked.Increment(ref _totalSteps);
-
                     if (_config.TargetKL > 0 && kl > _config.TargetKL * 1.5f)
                     {
                         earlyStop = true;

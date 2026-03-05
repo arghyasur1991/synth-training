@@ -132,6 +132,13 @@ namespace Genesis.Sentience.Learning
 
         protected override unsafe void OnSkillInitialize()
         {
+            // PPO must collect on-policy data from step 0; random warmup
+            // stores logProb=0/value=0 which causes ratio explosion → NaN.
+            learningStarts = 0;
+            // Reward normalization inside PPOSkillTrainer handles scaling;
+            // applying rewardScale on top would double-scale and destabilize.
+            rewardScale = 1f;
+
             var model = MjScene.Instance.Model;
             _nq = (int)model->nq;
             _nv = (int)model->nv;
