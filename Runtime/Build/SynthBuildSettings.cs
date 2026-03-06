@@ -25,8 +25,8 @@ namespace Genesis.Sentience.Learning
         [Tooltip("Log detailed file operations during build")]
         public bool verboseLogging = true;
 
-        internal const string STREAMING_ASSETS_SUBDIR = "SynthModels";
-        internal const string SETTINGS_RESOURCE_PATH = "SynthBuildSettings";
+        public const string STREAMING_ASSETS_SUBDIR = "SynthModels";
+        public const string SETTINGS_RESOURCE_PATH = "SynthBuildSettings";
 
         public static SynthBuildSettings Load()
         {

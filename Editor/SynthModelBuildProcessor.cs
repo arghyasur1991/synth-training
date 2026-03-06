@@ -6,7 +6,7 @@ using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
-namespace Genesis.Sentience.Learning.Editor
+namespace Genesis.Sentience.Learning
 {
     /// <summary>
     /// Pre-build: copies trained model checkpoints from persistentDataPath
