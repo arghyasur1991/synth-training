@@ -103,7 +103,9 @@ namespace Genesis.Sentience.Learning
 
         public void OnPostprocessBuild(BuildReport report)
         {
-            Cleanup();
+            var settings = SynthBuildSettings.Load();
+            if (settings == null || settings.cleanUpAfterBuild)
+                Cleanup();
         }
 
         private static void Cleanup()

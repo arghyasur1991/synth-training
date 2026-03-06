@@ -22,6 +22,10 @@ namespace Genesis.Sentience.Learning
                  "Empty = include all found models.")]
         public string[] synthFilter = { };
 
+        [Tooltip("Remove copied models from StreamingAssets after build completes. " +
+                 "Disable to keep them for inspection or manual deployment.")]
+        public bool cleanUpAfterBuild = true;
+
         [Tooltip("Log detailed file operations during build")]
         public bool verboseLogging = true;
 
