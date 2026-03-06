@@ -76,6 +76,9 @@ namespace Genesis.Sentience.Learning
             return action;
         }
 
+        public override float[] GetDeterministicAction(float[] obs) =>
+            _agent.GetDeterministicAction(obs);
+
         public override float[] GetRandomAction(Random rng)
         {
             var buf = new float[_agent.ActDim];

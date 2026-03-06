@@ -58,6 +58,7 @@ namespace Genesis.Sentience.Learning
 
         public abstract void Initialize(int obsDim, int actDim, TorchSharp.torch.Device device);
         public abstract float[] GetAction(float[] obs);
+        public abstract float[] GetDeterministicAction(float[] obs);
         public abstract float[] GetRandomAction(Random rng);
         public abstract void StoreTransition(float[] obs, float[] action, float reward,
                                              float[] nextObs, bool done);

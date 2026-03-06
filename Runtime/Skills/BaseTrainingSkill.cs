@@ -64,6 +64,10 @@ namespace Genesis.Sentience.Learning
         [Range(1f, 200f)]
         public float rewardScale = 50f;
 
+        [Header("Inference")]
+        [Tooltip("Run policy without training — load saved weights and use deterministic actions")]
+        public bool inferenceOnly;
+
         [Header("Persistence")]
         [Tooltip("Auto-save every N minutes (0 = disabled)")]
         public float autoSaveMinutes = 1f;
@@ -299,11 +303,12 @@ namespace Genesis.Sentience.Learning
 
                 long msState = sw.ElapsedMilliseconds;
 
-                if (_trainer is BaseSkillTrainer bst)
+                if (!inferenceOnly)
                 {
-                    bst.MaxStepsPerSecond = maxTrainingSPS;
+                    if (_trainer is BaseSkillTrainer bst)
+                        bst.MaxStepsPerSecond = maxTrainingSPS;
+                    _trainer.StartTraining();
                 }
-                _trainer.StartTraining();
 
                 _metrics = new TrainingMetrics();
 
@@ -326,8 +331,9 @@ namespace Genesis.Sentience.Learning
             _initialized = true;
             _lastAutoSaveTime = Time.realtimeSinceStartup;
 
-            Debug.Log($"{Name}: Initialized — obs={obsDim}, act={actDim}, " +
-                      $"frameSkip={frameSkip}, maxTrainSPS={maxTrainingSPS}");
+            string mode = inferenceOnly ? "INFERENCE" : $"TRAINING (maxSPS={maxTrainingSPS})";
+            Debug.Log($"{Name}: Initialized [{mode}] — obs={obsDim}, act={actDim}, " +
+                      $"frameSkip={frameSkip}");
             return true;
         }
 
@@ -353,7 +359,10 @@ namespace Genesis.Sentience.Learning
                 return null;
             }
 
-            _obsNormalizer.NormalizeAndUpdateInPlace(rawObs, _normalizedObs);
+            if (inferenceOnly)
+                _obsNormalizer.NormalizeInPlace(rawObs, _normalizedObs);
+            else
+                _obsNormalizer.NormalizeAndUpdateInPlace(rawObs, _normalizedObs);
             var fullObs = BuildFullObs(_normalizedObs);
 
             if (ContainsNaN(fullObs))
@@ -362,6 +371,29 @@ namespace Genesis.Sentience.Learning
                 return _smoothedAction;
             }
 
+            // ── Inference-only path: deterministic action, no training ──
+            if (inferenceOnly)
+            {
+                float[] infAction = _trainer.GetDeterministicAction(fullObs);
+                if (ContainsNaN(infAction))
+                    Array.Clear(infAction, 0, infAction.Length);
+                PostProcessAction(infAction);
+                for (int i = 0; i < infAction.Length; i++)
+                    _smoothedAction[i] = infAction[i];
+                _totalDecisions++;
+
+                AdvanceTime(Time.fixedDeltaTime * frameSkip);
+
+                bool done = CheckTermination();
+                if (done)
+                {
+                    OnTermination();
+                    return null;
+                }
+                return _smoothedAction;
+            }
+
+            // ── Training path ──
             if (_hasPrevTransition)
             {
                 float reward = ComputeReward();
