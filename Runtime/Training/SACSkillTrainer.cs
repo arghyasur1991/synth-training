@@ -48,6 +48,7 @@ namespace Genesis.Sentience.Learning
         }
 
         public override float[] GetAction(float[] obs) => _agent.GetAction(obs);
+        public override float[] GetDeterministicAction(float[] obs) => _agent.GetDeterministicAction(obs);
         public override float[] GetRandomAction(Random rng) => _agent.GetRandomAction(rng);
 
         public override void StoreTransition(float[] obs, float[] action, float reward,

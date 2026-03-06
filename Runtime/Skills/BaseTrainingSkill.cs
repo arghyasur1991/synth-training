@@ -64,6 +64,14 @@ namespace Genesis.Sentience.Learning
         [Range(1f, 200f)]
         public float rewardScale = 50f;
 
+        [Header("Inference")]
+        [Tooltip("Run policy without training — load saved weights")]
+        public bool inferenceOnly;
+
+        [Tooltip("Use deterministic (mean) actions. Disable to use stochastic " +
+                 "(noisy) actions like during training — useful for undertrained policies.")]
+        public bool deterministicInference = true;
+
         [Header("Persistence")]
         [Tooltip("Auto-save every N minutes (0 = disabled)")]
         public float autoSaveMinutes = 1f;
@@ -134,11 +142,12 @@ namespace Genesis.Sentience.Learning
         protected abstract (int obsDim, int actDim) GetDimensions();
 
         /// <summary>
-        /// Augment normalized physics obs with skill-specific data
-        /// (e.g. smoothed action, reference obs). Must write into a
-        /// pre-allocated array of size obsDim returned by GetDimensions().
+        /// Build the full raw observation by combining physics obs with
+        /// skill-specific data (reference obs, smoothed action, etc.).
+        /// Normalization is applied AFTER this, covering all dimensions.
+        /// Must write into a pre-allocated array of size obsDim.
         /// </summary>
-        protected abstract float[] BuildFullObs(float[] normalizedPhysicsObs);
+        protected abstract float[] BuildFullObs(float[] rawPhysicsObs);
 
         /// <summary>Compute the raw (unscaled) reward for the current step.</summary>
         protected abstract float ComputeReward();
@@ -248,7 +257,7 @@ namespace Genesis.Sentience.Learning
                 _trainer = CreateTrainer();
                 _trainer.Initialize(obsDim, actDim, device);
 
-                _obsNormalizer = new ObservationNormalizer(_physicsObsDim);
+                _obsNormalizer = new ObservationNormalizer(obsDim);
                 _rng = new Random();
 
                 _normalizedObs = new float[obsDim];
@@ -265,6 +274,8 @@ namespace Genesis.Sentience.Learning
                 string synthName = gameObject.name;
                 _persister = new StatePersister(
                     Path.Combine(Application.persistentDataPath, saveSubdirectory, synthName));
+
+                ModelBootstrap.ExtractIfNeeded(saveSubdirectory, synthName);
 
                 if (deleteSavesOnStart)
                 {
@@ -292,18 +303,23 @@ namespace Genesis.Sentience.Learning
                         _trainer.Dispose();
                         _trainer = CreateTrainer();
                         _trainer.Initialize(obsDim, actDim, device);
-                        _obsNormalizer = new ObservationNormalizer(_physicsObsDim);
+                        _obsNormalizer = new ObservationNormalizer(obsDim);
                         _totalDecisions = 0;
                     }
                 }
 
                 long msState = sw.ElapsedMilliseconds;
 
-                if (_trainer is BaseSkillTrainer bst)
+                if (inferenceOnly)
                 {
-                    bst.MaxStepsPerSecond = maxTrainingSPS;
+                    _totalDecisions = 0;
                 }
-                _trainer.StartTraining();
+                else
+                {
+                    if (_trainer is BaseSkillTrainer bst)
+                        bst.MaxStepsPerSecond = maxTrainingSPS;
+                    _trainer.StartTraining();
+                }
 
                 _metrics = new TrainingMetrics();
 
@@ -326,8 +342,9 @@ namespace Genesis.Sentience.Learning
             _initialized = true;
             _lastAutoSaveTime = Time.realtimeSinceStartup;
 
-            Debug.Log($"{Name}: Initialized — obs={obsDim}, act={actDim}, " +
-                      $"frameSkip={frameSkip}, maxTrainSPS={maxTrainingSPS}");
+            string mode = inferenceOnly ? "INFERENCE" : $"TRAINING (maxSPS={maxTrainingSPS})";
+            Debug.Log($"{Name}: Initialized [{mode}] — obs={obsDim}, act={actDim}, " +
+                      $"frameSkip={frameSkip}");
             return true;
         }
 
@@ -338,8 +355,8 @@ namespace Genesis.Sentience.Learning
             if (_destroyed || !_initialized || _proprioSense == null || !_proprioSense.IsReady)
                 return null;
 
-            // Skill-specific skip (e.g. assisted hold)
-            if (ShouldSkipDecision())
+            // Skill-specific skip (e.g. assisted hold) — training only
+            if (!inferenceOnly && ShouldSkipDecision())
                 return OnSkipDecision();
 
             var rawObs = _proprioSense.GetObservation();
@@ -353,8 +370,17 @@ namespace Genesis.Sentience.Learning
                 return null;
             }
 
-            _obsNormalizer.NormalizeAndUpdateInPlace(rawObs, _normalizedObs);
-            var fullObs = BuildFullObs(_normalizedObs);
+            // Build the raw full observation (physics + reference + action),
+            // then normalize ALL dimensions together. This matches the legacy
+            // pipeline where the normalizer covers physics AND reference,
+            // keeping all inputs on the same scale for the policy network.
+            var rawFullObs = BuildFullObs(rawObs);
+
+            if (inferenceOnly)
+                _obsNormalizer.NormalizeInPlace(rawFullObs, _normalizedObs);
+            else
+                _obsNormalizer.NormalizeAndUpdateInPlace(rawFullObs, _normalizedObs);
+            var fullObs = _normalizedObs;
 
             if (ContainsNaN(fullObs))
             {
@@ -362,6 +388,43 @@ namespace Genesis.Sentience.Learning
                 return _smoothedAction;
             }
 
+            // ── Inference-only path: run policy without training ──
+            if (inferenceOnly)
+            {
+                float[] infAction = deterministicInference
+                    ? _trainer.GetDeterministicAction(fullObs)
+                    : _trainer.GetAction(fullObs);
+                if (ContainsNaN(infAction))
+                {
+                    Debug.LogWarning($"{Name}: NaN in inference action at decision {_totalDecisions}, zeroing.");
+                    Array.Clear(infAction, 0, infAction.Length);
+                }
+                PostProcessAction(infAction);
+                for (int i = 0; i < infAction.Length; i++)
+                    _smoothedAction[i] = infAction[i];
+                _totalDecisions++;
+
+                if (_totalDecisions <= 5 || _totalDecisions % 200 == 0)
+                {
+                    float actMax = 0f;
+                    for (int i = 0; i < infAction.Length; i++)
+                        actMax = Math.Max(actMax, Math.Abs(infAction[i]));
+
+                    float obsMin = float.MaxValue, obsMax = float.MinValue;
+                    for (int i = 0; i < fullObs.Length; i++)
+                    {
+                        obsMin = Math.Min(obsMin, fullObs[i]);
+                        obsMax = Math.Max(obsMax, fullObs[i]);
+                    }
+
+                    Debug.Log($"{Name}: [inference] d={_totalDecisions} " +
+                        $"|act|={actMax:F4} obs[{obsMin:F3}..{obsMax:F3}] " +
+                        $"raw0={rawObs[0]:F4} raw1={rawObs[1]:F4} raw2={rawObs[2]:F4}");
+                }
+                return _smoothedAction;
+            }
+
+            // ── Training path ──
             if (_hasPrevTransition)
             {
                 float reward = ComputeReward();
@@ -433,8 +496,16 @@ namespace Genesis.Sentience.Learning
             string normPath = Path.Combine(dir, "normalizer.bin");
             if (File.Exists(normPath))
             {
-                using var br = new BinaryReader(File.OpenRead(normPath));
-                _obsNormalizer.Load(br);
+                try
+                {
+                    using var br = new BinaryReader(File.OpenRead(normPath));
+                    _obsNormalizer.Load(br);
+                }
+                catch (InvalidOperationException)
+                {
+                    Debug.LogWarning($"{Name}: Normalizer dimension changed " +
+                        $"(saved state used physics-only dim). Starting normalizer fresh.");
+                }
             }
 
             string metaPath = Path.Combine(dir, "meta.json");

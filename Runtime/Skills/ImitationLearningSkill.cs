@@ -173,10 +173,10 @@ namespace Genesis.Sentience.Learning
                 maxEpisodeSteps = Mathf.RoundToInt(_motionLibrary[0].Duration * extractionFps) * 2;
         }
 
-        protected override float[] BuildFullObs(float[] normalizedPhysicsObs)
+        protected override float[] BuildFullObs(float[] rawPhysicsObs)
         {
             int physLen = _physicsObsDim;
-            Buffer.BlockCopy(normalizedPhysicsObs, 0, _fullObsBuffer, 0,
+            Buffer.BlockCopy(rawPhysicsObs, 0, _fullObsBuffer, 0,
                 physLen * sizeof(float));
 
             BuildReferenceObs();
@@ -217,6 +217,19 @@ namespace Genesis.Sentience.Learning
         {
             UpdateClipSuccess(_activeClipIndex, _episodeReturn);
             SelectNewClipAndReset();
+        }
+
+        public override void AdvanceTime(float dt)
+        {
+            if (!inferenceOnly) return;
+
+            _motionTime += dt;
+            if (_motionLibrary != null && _motionLibrary.Length > 0)
+            {
+                _motionLibrary[_activeClipIndex].GetFrameAtTime(
+                    _motionTime, _refQpos, _refQvel, _refBodyPos);
+            }
+            _episodeStep++;
         }
 
         protected override void OnTransitionStored(float reward, bool done)

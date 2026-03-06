@@ -14,6 +14,9 @@ namespace Genesis.Sentience.Learning
         /// <summary>Sample a stochastic action from the current policy.</summary>
         float[] GetAction(float[] obs);
 
+        /// <summary>Get the deterministic (mean) action — no exploration noise.</summary>
+        float[] GetDeterministicAction(float[] obs);
+
         /// <summary>Sample a random action for warmup / exploration.</summary>
         float[] GetRandomAction(Random rng);
 
