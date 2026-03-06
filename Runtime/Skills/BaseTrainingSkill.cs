@@ -65,8 +65,12 @@ namespace Genesis.Sentience.Learning
         public float rewardScale = 50f;
 
         [Header("Inference")]
-        [Tooltip("Run policy without training — load saved weights and use deterministic actions")]
+        [Tooltip("Run policy without training — load saved weights")]
         public bool inferenceOnly;
+
+        [Tooltip("Use deterministic (mean) actions. Disable to use stochastic " +
+                 "(noisy) actions like during training — useful for undertrained policies.")]
+        public bool deterministicInference = true;
 
         [Header("Persistence")]
         [Tooltip("Auto-save every N minutes (0 = disabled)")]
@@ -377,10 +381,12 @@ namespace Genesis.Sentience.Learning
                 return _smoothedAction;
             }
 
-            // ── Inference-only path: deterministic action, no training ──
+            // ── Inference-only path: run policy without training ──
             if (inferenceOnly)
             {
-                float[] infAction = _trainer.GetDeterministicAction(fullObs);
+                float[] infAction = deterministicInference
+                    ? _trainer.GetDeterministicAction(fullObs)
+                    : _trainer.GetAction(fullObs);
                 if (ContainsNaN(infAction))
                 {
                     Debug.LogWarning($"{Name}: NaN in inference action at decision {_totalDecisions}, zeroing.");
