@@ -173,10 +173,10 @@ namespace Genesis.Sentience.Learning
                 maxEpisodeSteps = Mathf.RoundToInt(_motionLibrary[0].Duration * extractionFps) * 2;
         }
 
-        protected override float[] BuildFullObs(float[] normalizedPhysicsObs)
+        protected override float[] BuildFullObs(float[] rawPhysicsObs)
         {
             int physLen = _physicsObsDim;
-            Buffer.BlockCopy(normalizedPhysicsObs, 0, _fullObsBuffer, 0,
+            Buffer.BlockCopy(rawPhysicsObs, 0, _fullObsBuffer, 0,
                 physLen * sizeof(float));
 
             BuildReferenceObs();

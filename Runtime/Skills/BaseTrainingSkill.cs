@@ -142,11 +142,12 @@ namespace Genesis.Sentience.Learning
         protected abstract (int obsDim, int actDim) GetDimensions();
 
         /// <summary>
-        /// Augment normalized physics obs with skill-specific data
-        /// (e.g. smoothed action, reference obs). Must write into a
-        /// pre-allocated array of size obsDim returned by GetDimensions().
+        /// Build the full raw observation by combining physics obs with
+        /// skill-specific data (reference obs, smoothed action, etc.).
+        /// Normalization is applied AFTER this, covering all dimensions.
+        /// Must write into a pre-allocated array of size obsDim.
         /// </summary>
-        protected abstract float[] BuildFullObs(float[] normalizedPhysicsObs);
+        protected abstract float[] BuildFullObs(float[] rawPhysicsObs);
 
         /// <summary>Compute the raw (unscaled) reward for the current step.</summary>
         protected abstract float ComputeReward();
@@ -256,7 +257,7 @@ namespace Genesis.Sentience.Learning
                 _trainer = CreateTrainer();
                 _trainer.Initialize(obsDim, actDim, device);
 
-                _obsNormalizer = new ObservationNormalizer(_physicsObsDim);
+                _obsNormalizer = new ObservationNormalizer(obsDim);
                 _rng = new Random();
 
                 _normalizedObs = new float[obsDim];
@@ -302,7 +303,7 @@ namespace Genesis.Sentience.Learning
                         _trainer.Dispose();
                         _trainer = CreateTrainer();
                         _trainer.Initialize(obsDim, actDim, device);
-                        _obsNormalizer = new ObservationNormalizer(_physicsObsDim);
+                        _obsNormalizer = new ObservationNormalizer(obsDim);
                         _totalDecisions = 0;
                     }
                 }
@@ -369,11 +370,17 @@ namespace Genesis.Sentience.Learning
                 return null;
             }
 
+            // Build the raw full observation (physics + reference + action),
+            // then normalize ALL dimensions together. This matches the legacy
+            // pipeline where the normalizer covers physics AND reference,
+            // keeping all inputs on the same scale for the policy network.
+            var rawFullObs = BuildFullObs(rawObs);
+
             if (inferenceOnly)
-                _obsNormalizer.NormalizeInPlace(rawObs, _normalizedObs);
+                _obsNormalizer.NormalizeInPlace(rawFullObs, _normalizedObs);
             else
-                _obsNormalizer.NormalizeAndUpdateInPlace(rawObs, _normalizedObs);
-            var fullObs = BuildFullObs(_normalizedObs);
+                _obsNormalizer.NormalizeAndUpdateInPlace(rawFullObs, _normalizedObs);
+            var fullObs = _normalizedObs;
 
             if (ContainsNaN(fullObs))
             {
@@ -489,8 +496,16 @@ namespace Genesis.Sentience.Learning
             string normPath = Path.Combine(dir, "normalizer.bin");
             if (File.Exists(normPath))
             {
-                using var br = new BinaryReader(File.OpenRead(normPath));
-                _obsNormalizer.Load(br);
+                try
+                {
+                    using var br = new BinaryReader(File.OpenRead(normPath));
+                    _obsNormalizer.Load(br);
+                }
+                catch (InvalidOperationException)
+                {
+                    Debug.LogWarning($"{Name}: Normalizer dimension changed " +
+                        $"(saved state used physics-only dim). Starting normalizer fresh.");
+                }
             }
 
             string metaPath = Path.Combine(dir, "meta.json");
