@@ -14,9 +14,10 @@ namespace Genesis.Sentience.Learning
                  "persistentDataPath to StreamingAssets before build, cleans up after)")]
         public bool includeModelsInBuild = true;
 
-        [Tooltip("Source subdirectory under Application.persistentDataPath " +
-                 "(must match BaseTrainingSkill.saveSubdirectory)")]
-        public string sourceSubdirectory = "Training";
+        [Tooltip("Source subdirectories under Application.persistentDataPath " +
+                 "(must match BaseTrainingSkill.saveSubdirectory). " +
+                 "Empty = auto-discover all subdirectories containing models.")]
+        public string[] sourceSubdirectories = { };
 
         [Tooltip("Only include models for these synth names. " +
                  "Empty = include all found models.")]

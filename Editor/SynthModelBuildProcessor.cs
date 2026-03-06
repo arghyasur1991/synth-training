@@ -32,21 +32,11 @@ namespace Genesis.Sentience.Learning
             if (!settings.includeModelsInBuild)
                 return;
 
-            string sourceRoot = Path.Combine(
-                Application.persistentDataPath, settings.sourceSubdirectory);
-
-            if (!Directory.Exists(sourceRoot))
+            string[] sourceSubdirs = DiscoverSourceDirectories(settings);
+            if (sourceSubdirs.Length == 0)
             {
-                Debug.LogWarning("[SynthBuild] No trained models found at " +
-                    $"{sourceRoot} — building without models.");
-                return;
-            }
-
-            string[] synthDirs = Directory.GetDirectories(sourceRoot);
-            if (synthDirs.Length == 0)
-            {
-                Debug.LogWarning("[SynthBuild] No synth model directories in " +
-                    $"{sourceRoot} — building without models.");
+                Debug.LogWarning("[SynthBuild] No trained model directories found " +
+                    "— building without models.");
                 return;
             }
 
@@ -62,35 +52,41 @@ namespace Genesis.Sentience.Learning
             int copiedSynths = 0;
             int copiedFiles = 0;
 
-            foreach (string synthDir in synthDirs)
+            foreach (string sourceRoot in sourceSubdirs)
             {
-                string synthName = Path.GetFileName(synthDir);
+                string subdirName = Path.GetFileName(sourceRoot);
+                string[] synthDirs = Directory.GetDirectories(sourceRoot);
 
-                if (hasFilter && !filter.Any(f =>
-                    string.Equals(f.Trim(), synthName, StringComparison.OrdinalIgnoreCase)))
+                foreach (string synthDir in synthDirs)
                 {
-                    if (settings.verboseLogging)
-                        Debug.Log($"[SynthBuild] Skipping '{synthName}' (not in filter)");
-                    continue;
+                    string synthName = Path.GetFileName(synthDir);
+
+                    if (hasFilter && !filter.Any(f =>
+                        string.Equals(f.Trim(), synthName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (settings.verboseLogging)
+                            Debug.Log($"[SynthBuild] Skipping '{synthName}' (not in filter)");
+                        continue;
+                    }
+
+                    string destSynthDir = Path.Combine(dest, subdirName, synthName);
+                    Directory.CreateDirectory(destSynthDir);
+
+                    foreach (string file in Directory.GetFiles(synthDir))
+                    {
+                        string ext = Path.GetExtension(file).ToLower();
+                        if (ext == ".tmp") continue;
+
+                        string destFile = Path.Combine(destSynthDir, Path.GetFileName(file));
+                        File.Copy(file, destFile, overwrite: true);
+                        copiedFiles++;
+
+                        if (settings.verboseLogging)
+                            Debug.Log($"[SynthBuild] Copied {subdirName}/{synthName}/{Path.GetFileName(file)}");
+                    }
+
+                    copiedSynths++;
                 }
-
-                string destSynthDir = Path.Combine(dest, synthName);
-                Directory.CreateDirectory(destSynthDir);
-
-                foreach (string file in Directory.GetFiles(synthDir))
-                {
-                    string ext = Path.GetExtension(file).ToLower();
-                    if (ext == ".tmp") continue;
-
-                    string destFile = Path.Combine(destSynthDir, Path.GetFileName(file));
-                    File.Copy(file, destFile, overwrite: true);
-                    copiedFiles++;
-
-                    if (settings.verboseLogging)
-                        Debug.Log($"[SynthBuild] Copied {synthName}/{Path.GetFileName(file)}");
-                }
-
-                copiedSynths++;
             }
 
             if (copiedSynths == 0)
@@ -111,6 +107,36 @@ namespace Genesis.Sentience.Learning
             var settings = SynthBuildSettings.Load();
             if (settings == null || settings.cleanUpAfterBuild)
                 Cleanup();
+        }
+
+        /// <summary>
+        /// If sourceSubdirectories is populated, use those.
+        /// Otherwise auto-discover: scan persistentDataPath for any subdirectory
+        /// that contains at least one child folder with model files.
+        /// </summary>
+        private static string[] DiscoverSourceDirectories(SynthBuildSettings settings)
+        {
+            string root = Application.persistentDataPath;
+            var explicit_ = settings.sourceSubdirectories;
+            bool hasExplicit = explicit_ != null && explicit_.Length > 0 &&
+                               explicit_.Any(s => !string.IsNullOrWhiteSpace(s));
+
+            if (hasExplicit)
+            {
+                return explicit_
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => Path.Combine(root, s.Trim()))
+                    .Where(Directory.Exists)
+                    .ToArray();
+            }
+
+            if (!Directory.Exists(root))
+                return Array.Empty<string>();
+
+            return Directory.GetDirectories(root)
+                .Where(d => Directory.GetDirectories(d)
+                    .Any(sub => Directory.GetFiles(sub).Length > 0))
+                .ToArray();
         }
 
         private static SynthBuildSettings EnsureSettingsAsset()

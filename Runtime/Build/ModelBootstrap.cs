@@ -28,7 +28,7 @@ namespace Genesis.Sentience.Learning
                 return false;
 
             string streamingDir = Path.Combine(
-                SynthBuildSettings.STREAMING_ASSETS_SUBDIR, synthName);
+                SynthBuildSettings.STREAMING_ASSETS_SUBDIR, saveSubdirectory, synthName);
 
             string manifestPath = Path.Combine(
                 Application.streamingAssetsPath, streamingDir, "meta.json");
