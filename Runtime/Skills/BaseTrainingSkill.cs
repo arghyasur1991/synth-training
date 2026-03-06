@@ -305,7 +305,11 @@ namespace Genesis.Sentience.Learning
 
                 long msState = sw.ElapsedMilliseconds;
 
-                if (!inferenceOnly)
+                if (inferenceOnly)
+                {
+                    _totalDecisions = 0;
+                }
+                else
                 {
                     if (_trainer is BaseSkillTrainer bst)
                         bst.MaxStepsPerSecond = maxTrainingSPS;
@@ -387,12 +391,22 @@ namespace Genesis.Sentience.Learning
                     _smoothedAction[i] = infAction[i];
                 _totalDecisions++;
 
-                if (_totalDecisions <= 3 || _totalDecisions % 500 == 0)
+                if (_totalDecisions <= 5 || _totalDecisions % 200 == 0)
                 {
-                    float absMax = 0f;
+                    float actMax = 0f;
                     for (int i = 0; i < infAction.Length; i++)
-                        absMax = Math.Max(absMax, Math.Abs(infAction[i]));
-                    Debug.Log($"{Name}: [inference] decision={_totalDecisions}, |maxAction|={absMax:F4}");
+                        actMax = Math.Max(actMax, Math.Abs(infAction[i]));
+
+                    float obsMin = float.MaxValue, obsMax = float.MinValue;
+                    for (int i = 0; i < fullObs.Length; i++)
+                    {
+                        obsMin = Math.Min(obsMin, fullObs[i]);
+                        obsMax = Math.Max(obsMax, fullObs[i]);
+                    }
+
+                    Debug.Log($"{Name}: [inference] d={_totalDecisions} " +
+                        $"|act|={actMax:F4} obs[{obsMin:F3}..{obsMax:F3}] " +
+                        $"raw0={rawObs[0]:F4} raw1={rawObs[1]:F4} raw2={rawObs[2]:F4}");
                 }
                 return _smoothedAction;
             }
