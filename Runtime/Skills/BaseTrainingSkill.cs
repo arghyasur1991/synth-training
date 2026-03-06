@@ -270,6 +270,8 @@ namespace Genesis.Sentience.Learning
                 _persister = new StatePersister(
                     Path.Combine(Application.persistentDataPath, saveSubdirectory, synthName));
 
+                ModelBootstrap.ExtractIfNeeded(saveSubdirectory, synthName);
+
                 if (deleteSavesOnStart)
                 {
                     _persister.DeleteAll();
