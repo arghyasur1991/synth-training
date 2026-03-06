@@ -384,8 +384,6 @@ namespace Genesis.Sentience.Learning
                     _smoothedAction[i] = infAction[i];
                 _totalDecisions++;
 
-                AdvanceTime(Time.fixedDeltaTime * frameSkip);
-
                 bool done = CheckTermination();
                 if (done)
                 {

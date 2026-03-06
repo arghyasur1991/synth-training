@@ -219,6 +219,19 @@ namespace Genesis.Sentience.Learning
             SelectNewClipAndReset();
         }
 
+        public override void AdvanceTime(float dt)
+        {
+            if (!inferenceOnly) return;
+
+            _motionTime += dt;
+            if (_motionLibrary != null && _motionLibrary.Length > 0)
+            {
+                _motionLibrary[_activeClipIndex].GetFrameAtTime(
+                    _motionTime, _refQpos, _refQvel, _refBodyPos);
+            }
+            _episodeStep++;
+        }
+
         protected override void OnTransitionStored(float reward, bool done)
         {
             _motionTime += Time.fixedDeltaTime * frameSkip;
