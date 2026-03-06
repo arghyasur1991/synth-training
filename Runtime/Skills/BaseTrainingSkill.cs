@@ -533,7 +533,7 @@ namespace Genesis.Sentience.Learning
 
         protected void RequestAsyncSave()
         {
-            if (_saveInProgress || !_initialized || _persister == null) return;
+            if (_saveInProgress || !_initialized || _persister == null || inferenceOnly) return;
             _saveInProgress = true;
 
             _trainer.PauseTraining();
@@ -673,19 +673,19 @@ namespace Genesis.Sentience.Learning
         void OnDisable()
         {
             Application.wantsToQuit -= OnWantsToQuit;
-            if (_initialized && !_saveInProgress && !_destroyed)
+            if (_initialized && !_saveInProgress && !_destroyed && !inferenceOnly)
                 RequestAsyncSave();
         }
 
         void OnApplicationPause(bool pause)
         {
-            if (pause && _initialized && !_saveInProgress)
+            if (pause && _initialized && !_saveInProgress && !inferenceOnly)
                 RequestAsyncSave();
         }
 
         private bool OnWantsToQuit()
         {
-            if (!_initialized || _persister == null) return true;
+            if (!_initialized || _persister == null || inferenceOnly) return true;
 
             if (!_saveInProgress && !_quitSaveStarted)
             {

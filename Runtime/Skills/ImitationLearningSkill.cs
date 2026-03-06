@@ -125,7 +125,8 @@ namespace Genesis.Sentience.Learning
 
             int filteredQpos = _filter.includedQposIdx?.Length ?? 0;
             int filteredQvel = _filter.includedQvelIdx?.Length ?? 0;
-            _refObsDim = filteredQpos + filteredQvel + 1; // +1 for phase
+            // Legacy layout: rootZ(1) + quat(4) + inclQpos + rootVel(6) + inclQvel + sin/cos phase(2)
+            _refObsDim = 1 + 4 + filteredQpos + 6 + filteredQvel + 2;
 
             return (physObs + _refObsDim + actDim, actDim);
         }
@@ -505,36 +506,45 @@ namespace Genesis.Sentience.Learning
                 $"min={MinArray(_clipSuccessRates):F2}, max={MaxArray(_clipSuccessRates):F2}");
         }
 
+        /// <summary>
+        /// Build reference observations matching the legacy AppendReferenceObs layout:
+        /// absolute reference values (not relative differences), no pre-clamping.
+        /// The full-obs normalizer handles scaling — pre-clamping destroys information.
+        /// </summary>
         private unsafe void BuildReferenceObs()
         {
-            var data = MjScene.Instance.Data;
             int idx = 0;
 
+            // Reference root Z + quaternion (absolute)
+            _refObsBuffer[idx++] = (float)_refQpos[2];
+            for (int i = 3; i < 7; i++)
+                _refObsBuffer[idx++] = (float)_refQpos[i];
+
+            // Reference filtered hinge joint positions (absolute)
             var inclQpos = _filter.includedQposIdx;
             if (inclQpos != null)
             {
                 for (int i = 0; i < inclQpos.Length; i++)
-                {
-                    int qi = inclQpos[i];
-                    float diff = (float)(data->qpos[qi] - _refQpos[qi]);
-                    _refObsBuffer[idx++] = Math.Clamp(diff, -5f, 5f);
-                }
+                    _refObsBuffer[idx++] = (float)_refQpos[inclQpos[i]];
             }
 
+            // Reference root velocity (absolute)
+            for (int i = 0; i < 6; i++)
+                _refObsBuffer[idx++] = (float)_refQvel[i];
+
+            // Reference filtered hinge joint velocities (absolute)
             var inclQvel = _filter.includedQvelIdx;
             if (inclQvel != null)
             {
                 for (int i = 0; i < inclQvel.Length; i++)
-                {
-                    int vi = inclQvel[i];
-                    float diff = (float)(data->qvel[vi] - _refQvel[vi]);
-                    _refObsBuffer[idx++] = Math.Clamp(diff, -10f, 10f);
-                }
+                    _refObsBuffer[idx++] = (float)_refQvel[inclQvel[i]];
             }
 
+            // Phase (sin + cos encoding, matching legacy)
             float phase = _motionLibrary != null && _activeClipIndex < _motionLibrary.Length
                 ? _motionLibrary[_activeClipIndex].GetPhase(_motionTime) : 0f;
-            _refObsBuffer[idx] = phase;
+            _refObsBuffer[idx++] = (float)Math.Sin(2.0 * Math.PI * phase);
+            _refObsBuffer[idx] = (float)Math.Cos(2.0 * Math.PI * phase);
         }
 
         private static float MinArray(float[] arr)
