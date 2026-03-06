@@ -346,8 +346,8 @@ namespace Genesis.Sentience.Learning
             if (_destroyed || !_initialized || _proprioSense == null || !_proprioSense.IsReady)
                 return null;
 
-            // Skill-specific skip (e.g. assisted hold)
-            if (ShouldSkipDecision())
+            // Skill-specific skip (e.g. assisted hold) — training only
+            if (!inferenceOnly && ShouldSkipDecision())
                 return OnSkipDecision();
 
             var rawObs = _proprioSense.GetObservation();
@@ -378,17 +378,21 @@ namespace Genesis.Sentience.Learning
             {
                 float[] infAction = _trainer.GetDeterministicAction(fullObs);
                 if (ContainsNaN(infAction))
+                {
+                    Debug.LogWarning($"{Name}: NaN in inference action at decision {_totalDecisions}, zeroing.");
                     Array.Clear(infAction, 0, infAction.Length);
+                }
                 PostProcessAction(infAction);
                 for (int i = 0; i < infAction.Length; i++)
                     _smoothedAction[i] = infAction[i];
                 _totalDecisions++;
 
-                bool done = CheckTermination();
-                if (done)
+                if (_totalDecisions <= 3 || _totalDecisions % 500 == 0)
                 {
-                    OnTermination();
-                    return null;
+                    float absMax = 0f;
+                    for (int i = 0; i < infAction.Length; i++)
+                        absMax = Math.Max(absMax, Math.Abs(infAction[i]));
+                    Debug.Log($"{Name}: [inference] decision={_totalDecisions}, |maxAction|={absMax:F4}");
                 }
                 return _smoothedAction;
             }
