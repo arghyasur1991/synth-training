@@ -24,7 +24,12 @@ namespace Genesis.Sentience.Learning
         public void OnPreprocessBuild(BuildReport report)
         {
             var settings = SynthBuildSettings.Load();
-            if (settings == null || !settings.includeModelsInBuild)
+            if (settings == null)
+            {
+                settings = EnsureSettingsAsset();
+                if (settings == null) return;
+            }
+            if (!settings.includeModelsInBuild)
                 return;
 
             string sourceRoot = Path.Combine(
@@ -106,6 +111,23 @@ namespace Genesis.Sentience.Learning
             var settings = SynthBuildSettings.Load();
             if (settings == null || settings.cleanUpAfterBuild)
                 Cleanup();
+        }
+
+        private static SynthBuildSettings EnsureSettingsAsset()
+        {
+            string dir = "Assets/Resources";
+            if (!Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            string path = $"{dir}/{SynthBuildSettings.SETTINGS_RESOURCE_PATH}.asset";
+            if (File.Exists(path))
+                return AssetDatabase.LoadAssetAtPath<SynthBuildSettings>(path);
+
+            var asset = ScriptableObject.CreateInstance<SynthBuildSettings>();
+            AssetDatabase.CreateAsset(asset, path);
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[SynthBuild] Created default SynthBuildSettings at {path}");
+            return asset;
         }
 
         private static void Cleanup()

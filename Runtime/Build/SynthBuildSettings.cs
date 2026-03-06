@@ -34,7 +34,25 @@ namespace Genesis.Sentience.Learning
 
         public static SynthBuildSettings Load()
         {
-            return Resources.Load<SynthBuildSettings>(SETTINGS_RESOURCE_PATH);
+            var settings = Resources.Load<SynthBuildSettings>(SETTINGS_RESOURCE_PATH);
+#if UNITY_EDITOR
+            if (settings == null)
+                settings = FindAnyInProject();
+#endif
+            return settings;
         }
+
+#if UNITY_EDITOR
+        private static SynthBuildSettings FindAnyInProject()
+        {
+            string[] guids = UnityEditor.AssetDatabase.FindAssets("t:SynthBuildSettings");
+            if (guids.Length > 0)
+            {
+                string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guids[0]);
+                return UnityEditor.AssetDatabase.LoadAssetAtPath<SynthBuildSettings>(path);
+            }
+            return null;
+        }
+#endif
     }
 }
