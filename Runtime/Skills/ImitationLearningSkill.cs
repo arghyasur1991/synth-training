@@ -319,6 +319,11 @@ namespace Genesis.Sentience.Learning
                         _motionTime, _refQpos, _refQvel, _refBodyPos);
                 }
 
+                // LoadPhysicsState (called before LoadExtraState) restores qpos
+                // from disk, which may have a stale root XY position. Re-apply
+                // the scene-designated spawn position.
+                RestoreSpawnPosition();
+
                 Debug.Log($"ImitationLearning: Loaded state — clip={_activeClipIndex}, " +
                     $"ep_step={_episodeStep}");
             }
@@ -360,6 +365,20 @@ namespace Genesis.Sentience.Learning
         protected override void OnSkillValidate()
         {
             if (ppoConfig == null) ppoConfig = new PPOConfig();
+        }
+
+        /// <summary>
+        /// Force the MuJoCo root body back to the scene's spawn XY.
+        /// Called after any operation that may overwrite qpos (RSI reset,
+        /// LoadPhysicsState) so the synth never teleports to the mocap origin.
+        /// </summary>
+        private unsafe void RestoreSpawnPosition()
+        {
+            if (!MjScene.InstanceExists || MjScene.Instance.Data == null) return;
+            var data = MjScene.Instance.Data;
+            data->qpos[0] = _spawnRootX;
+            data->qpos[1] = _spawnRootY;
+            MujocoLib.mj_forward(MjScene.Instance.Model, data);
         }
 
         // ── Motion Library ──────────────────────────────────────────────
