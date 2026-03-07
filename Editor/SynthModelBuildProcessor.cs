@@ -97,9 +97,15 @@ namespace Genesis.Sentience.Learning
                 return;
             }
 
-            AssetDatabase.Refresh();
+            // Force synchronous import so the build pipeline sees the new files
+            // before it collects StreamingAssets for the APK.
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+
+            // Verify the files are on disk
+            int verifyCount = Directory.GetFiles(dest, "*", SearchOption.AllDirectories).Length;
             Debug.Log($"[SynthBuild] Packaged {copiedFiles} files from " +
-                $"{copiedSynths} synth(s) into StreamingAssets.");
+                $"{copiedSynths} synth(s) into StreamingAssets " +
+                $"(verified {verifyCount} files on disk at {dest}).");
         }
 
         public void OnPostprocessBuild(BuildReport report)
