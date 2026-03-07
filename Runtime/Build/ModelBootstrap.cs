@@ -26,7 +26,7 @@ namespace Genesis.Sentience.Learning
 
         private static volatile bool _complete;
         private static volatile bool _started;
-        private static string _dataPath;
+        private static string _apkPath;
         private static string _persistentDataPath;
         private static string _streamingAssetsPath;
 
@@ -50,12 +50,35 @@ namespace Genesis.Sentience.Learning
             if (_started) return;
             _started = true;
 
-            // Cache Unity API values on the main thread before going to bg
-            _dataPath = Application.dataPath;
             _persistentDataPath = Application.persistentDataPath;
             _streamingAssetsPath = Application.streamingAssetsPath;
 
+            // On Android, derive APK path from streamingAssetsPath which is
+            // "jar:file:///data/app/.../base.apk!/assets" — more reliable
+            // than Application.dataPath which may not include the full path.
+            _apkPath = Application.dataPath;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            _apkPath = ResolveApkPath(_streamingAssetsPath, _apkPath);
+#endif
+
+            Debug.Log($"[ModelBootstrap] Starting background extraction " +
+                      $"(apk={_apkPath}, persist={_persistentDataPath})");
+
             Task.Run(ExtractAll);
+        }
+
+        private static string ResolveApkPath(string streamingAssetsPath, string fallback)
+        {
+            // streamingAssetsPath = "jar:file:///data/app/.../base.apk!/assets"
+            const string jarPrefix = "jar:file://";
+            if (streamingAssetsPath.StartsWith(jarPrefix))
+            {
+                string path = streamingAssetsPath.Substring(jarPrefix.Length);
+                int bang = path.IndexOf('!');
+                if (bang >= 0)
+                    return path.Substring(0, bang);
+            }
+            return fallback;
         }
 
         private static void ExtractAll()
@@ -83,15 +106,21 @@ namespace Genesis.Sentience.Learning
         {
             string prefix = "assets/" + SynthBuildSettings.STREAMING_ASSETS_SUBDIR + "/";
             int extracted = 0;
+            int totalEntries = 0;
+            string firstEntry = null;
 
-            using (var zip = ZipFile.OpenRead(_dataPath))
+            using (var zip = ZipFile.OpenRead(_apkPath))
             {
                 foreach (var entry in zip.Entries)
                 {
+                    totalEntries++;
+                    if (firstEntry == null && entry.FullName.StartsWith("assets/"))
+                        firstEntry = entry.FullName;
+
                     if (!entry.FullName.StartsWith(prefix, StringComparison.Ordinal))
                         continue;
                     if (entry.FullName.EndsWith("/", StringComparison.Ordinal))
-                        continue; // skip directory entries
+                        continue;
                     if (entry.Length == 0)
                         continue;
 
@@ -111,11 +140,12 @@ namespace Genesis.Sentience.Learning
                 }
             }
 
-            // Write marker files per synth directory
             if (extracted > 0)
-                WriteMarkers(_persistentDataPath, prefix.Length);
+                WriteMarkers(_persistentDataPath);
 
-            Debug.Log($"[ModelBootstrap] APK extraction complete — {extracted} files");
+            Debug.Log($"[ModelBootstrap] APK extraction: {extracted} files extracted " +
+                      $"(zip has {totalEntries} entries, prefix='{prefix}', " +
+                      $"firstAsset='{firstEntry ?? "none"}')");
         }
 #endif
 
@@ -146,16 +176,12 @@ namespace Genesis.Sentience.Learning
             }
 
             if (extracted > 0)
-                WriteMarkers(_persistentDataPath, 0);
+                WriteMarkers(_persistentDataPath);
 
             Debug.Log($"[ModelBootstrap] FileSystem extraction complete — {extracted} files");
         }
 
-        /// <summary>
-        /// Write a marker file in each synth leaf directory to skip future extractions.
-        /// Scans persistentDataPath for directories that contain meta.json.
-        /// </summary>
-        private static void WriteMarkers(string root, int unused)
+        private static void WriteMarkers(string root)
         {
             try
             {
