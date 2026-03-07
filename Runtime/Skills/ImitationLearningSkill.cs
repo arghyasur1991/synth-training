@@ -88,6 +88,10 @@ namespace Genesis.Sentience.Learning
         private float _standingZ;
         private int _nq, _nv, _nbody;
 
+        // Spawn root position — preserved across RSI resets so the synth
+        // stays at its scene-designated location.
+        private double _spawnRootX, _spawnRootY;
+
         // Hard negative mining state
         private float[] _clipSuccessRates;
         private int[] _clipAttempts;
@@ -160,6 +164,10 @@ namespace Genesis.Sentience.Learning
             _fullObsBuffer = new float[obsDim];
 
             _reward = new DeepMimicReward(rewardConfig);
+
+            // Capture spawn root XY before any RSI reset overwrites it
+            _spawnRootX = MjScene.Instance.Data->qpos[0];
+            _spawnRootY = MjScene.Instance.Data->qpos[1];
 
             ResolveKeyBodyIndices();
             ExtractMotionLibrary();
@@ -423,8 +431,14 @@ namespace Genesis.Sentience.Learning
             var data = MjScene.Instance.Data;
             var model = MjScene.Instance.Model;
 
+            // Set joint angles and root orientation from reference, but keep
+            // root XY at the synth's scene-designated spawn position so it
+            // doesn't teleport to the motion capture origin.
             for (int i = 0; i < _nq; i++)
                 data->qpos[i] = _refQpos[i] + (i >= 7 ? (_rng.NextDouble() * 2.0 - 1.0) * resetNoise : 0);
+
+            data->qpos[0] = _spawnRootX;
+            data->qpos[1] = _spawnRootY;
 
             // Re-normalize root quaternion
             double w = data->qpos[3], x = data->qpos[4], y = data->qpos[5], z = data->qpos[6];
@@ -440,6 +454,10 @@ namespace Genesis.Sentience.Learning
 
             for (int i = 0; i < _nv; i++)
                 data->qvel[i] = _refQvel[i];
+
+            // Zero root linear velocity so it doesn't drift from spawn
+            data->qvel[0] = 0;
+            data->qvel[1] = 0;
 
             MujocoLib.mj_forward(model, data);
 
