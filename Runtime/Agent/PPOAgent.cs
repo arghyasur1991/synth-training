@@ -138,7 +138,17 @@ namespace Genesis.Sentience.Learning
 
         private static Module<Tensor, Tensor> LayerInit(Linear layer, double std, double biasConst = 0.0)
         {
-            nn.init.orthogonal_(layer.weight, std);
+            try
+            {
+                nn.init.orthogonal_(layer.weight, std);
+            }
+            catch (ExternalException)
+            {
+                // orthogonal_ requires LAPACK which isn't available on Android/ARM64.
+                // Fall back to Kaiming uniform (the PyTorch default for Linear layers).
+                // Weights will be overwritten when loading a saved model.
+                nn.init.kaiming_uniform_(layer.weight, Math.Sqrt(5));
+            }
             nn.init.constant_(layer.bias, biasConst);
             return layer;
         }
