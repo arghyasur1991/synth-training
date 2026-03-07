@@ -1,114 +1,173 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using UnityEngine;
-using UnityEngine.Networking;
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+using System.IO.Compression;
+#endif
 
 namespace Genesis.Sentience.Learning
 {
     /// <summary>
     /// Extracts bundled model checkpoints from StreamingAssets to
-    /// persistentDataPath on first launch. On Android, StreamingAssets
-    /// are inside the APK and must be read via UnityWebRequest.
+    /// persistentDataPath on first launch.
+    ///
+    /// Runs on a background thread, triggered automatically before
+    /// scene load via RuntimeInitializeOnLoadMethod. On Android, reads
+    /// directly from the APK (zip) — no UnityWebRequest / main thread needed.
+    ///
+    /// Skills check <see cref="IsComplete"/> during init; SynthBrain's
+    /// retry loop naturally waits until extraction finishes.
     /// </summary>
     public static class ModelBootstrap
     {
         private const string MARKER_FILE = ".synth_extracted";
 
-        /// <summary>
-        /// If persistentDataPath/{subdir}/{synthName} is empty but
-        /// StreamingAssets/SynthModels/{synthName} has bundled models,
-        /// extract them. Returns true if extraction happened.
-        /// </summary>
-        public static bool ExtractIfNeeded(string saveSubdirectory, string synthName)
+        private static volatile bool _complete;
+        private static volatile bool _started;
+        private static string _dataPath;
+        private static string _persistentDataPath;
+        private static string _streamingAssetsPath;
+
+        /// <summary>True once background extraction has finished (or was skipped).</summary>
+        public static bool IsComplete => _complete;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void AutoStart()
         {
-            string destDir = Path.Combine(
-                Application.persistentDataPath, saveSubdirectory, synthName);
+            _complete = false;
+            _started = false;
+            Start();
+        }
 
-            if (Directory.Exists(destDir) && File.Exists(Path.Combine(destDir, MARKER_FILE)))
-                return false;
+        /// <summary>
+        /// Kick off background extraction if not already running.
+        /// Safe to call multiple times (idempotent).
+        /// </summary>
+        public static void Start()
+        {
+            if (_started) return;
+            _started = true;
 
-            string streamingDir = Path.Combine(
-                SynthBuildSettings.STREAMING_ASSETS_SUBDIR, saveSubdirectory, synthName);
+            // Cache Unity API values on the main thread before going to bg
+            _dataPath = Application.dataPath;
+            _persistentDataPath = Application.persistentDataPath;
+            _streamingAssetsPath = Application.streamingAssetsPath;
 
-            string manifestPath = Path.Combine(
-                Application.streamingAssetsPath, streamingDir, "meta.json");
+            Task.Run(ExtractAll);
+        }
 
-            if (!StreamingFileExists(manifestPath))
-                return false;
-
-            Directory.CreateDirectory(destDir);
-
-            string[] knownFiles = {
-                "meta.json", "normalizer.bin", "physics_state.bin",
-                "ppo_actor.pt", "ppo_critic.pt", "ppo_state.bin",
-                "sac_agent.pt", "sac_state.bin",
-                "imitation_state.bin",
-                "reward_bar.bin", "curriculum.bin"
-            };
-
-            int extracted = 0;
-            foreach (string fileName in knownFiles)
+        private static void ExtractAll()
+        {
+            try
             {
-                string srcPath = Path.Combine(
-                    Application.streamingAssetsPath, streamingDir, fileName);
-                string dstPath = Path.Combine(destDir, fileName);
+#if UNITY_ANDROID && !UNITY_EDITOR
+                ExtractFromApk();
+#else
+                ExtractFromFileSystem();
+#endif
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[ModelBootstrap] Extraction failed: {e.Message}\n{e.StackTrace}");
+            }
+            finally
+            {
+                _complete = true;
+            }
+        }
 
-                if (File.Exists(dstPath)) continue;
+#if UNITY_ANDROID && !UNITY_EDITOR
+        private static void ExtractFromApk()
+        {
+            string prefix = "assets/" + SynthBuildSettings.STREAMING_ASSETS_SUBDIR + "/";
+            int extracted = 0;
 
-                byte[] data = ReadStreamingAsset(srcPath);
-                if (data != null && data.Length > 0)
+            using (var zip = ZipFile.OpenRead(_dataPath))
+            {
+                foreach (var entry in zip.Entries)
                 {
-                    File.WriteAllBytes(dstPath, data);
+                    if (!entry.FullName.StartsWith(prefix, StringComparison.Ordinal))
+                        continue;
+                    if (entry.FullName.EndsWith("/", StringComparison.Ordinal))
+                        continue; // skip directory entries
+                    if (entry.Length == 0)
+                        continue;
+
+                    // "assets/SynthModels/ImitationLearning/GirlSynth/meta.json"
+                    //  → "ImitationLearning/GirlSynth/meta.json"
+                    string relativePath = entry.FullName.Substring(prefix.Length);
+                    string destPath = Path.Combine(_persistentDataPath, relativePath);
+
+                    if (File.Exists(destPath))
+                        continue;
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(destPath));
+                    using (var src = entry.Open())
+                    using (var dst = File.Create(destPath))
+                        src.CopyTo(dst);
                     extracted++;
                 }
             }
 
+            // Write marker files per synth directory
             if (extracted > 0)
+                WriteMarkers(_persistentDataPath, prefix.Length);
+
+            Debug.Log($"[ModelBootstrap] APK extraction complete — {extracted} files");
+        }
+#endif
+
+        private static void ExtractFromFileSystem()
+        {
+            string srcRoot = Path.Combine(
+                _streamingAssetsPath, SynthBuildSettings.STREAMING_ASSETS_SUBDIR);
+
+            if (!Directory.Exists(srcRoot))
             {
-                File.WriteAllText(Path.Combine(destDir, MARKER_FILE),
-                    DateTime.UtcNow.ToString("o"));
-                Debug.Log($"[ModelBootstrap] Extracted {extracted} files for '{synthName}'");
+                Debug.Log("[ModelBootstrap] No bundled models in StreamingAssets.");
+                return;
             }
 
-            return extracted > 0;
+            int extracted = 0;
+
+            foreach (string file in Directory.GetFiles(srcRoot, "*", SearchOption.AllDirectories))
+            {
+                string relativePath = file.Substring(srcRoot.Length + 1);
+                string destPath = Path.Combine(_persistentDataPath, relativePath);
+
+                if (File.Exists(destPath))
+                    continue;
+
+                Directory.CreateDirectory(Path.GetDirectoryName(destPath));
+                File.Copy(file, destPath);
+                extracted++;
+            }
+
+            if (extracted > 0)
+                WriteMarkers(_persistentDataPath, 0);
+
+            Debug.Log($"[ModelBootstrap] FileSystem extraction complete — {extracted} files");
         }
 
-        private static bool StreamingFileExists(string path)
+        /// <summary>
+        /// Write a marker file in each synth leaf directory to skip future extractions.
+        /// Scans persistentDataPath for directories that contain meta.json.
+        /// </summary>
+        private static void WriteMarkers(string root, int unused)
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
-            return ReadStreamingAsset(path) != null;
-#else
-            return File.Exists(path);
-#endif
-        }
-
-        private static byte[] ReadStreamingAsset(string path)
-        {
-#if UNITY_ANDROID && !UNITY_EDITOR
             try
             {
-                using var request = UnityWebRequest.Get(path);
-                var op = request.SendWebRequest();
-                while (!op.isDone) { }
-                if (request.result != UnityWebRequest.Result.Success)
-                    return null;
-                return request.downloadHandler.data;
+                foreach (string metaFile in Directory.GetFiles(root, "meta.json", SearchOption.AllDirectories))
+                {
+                    string dir = Path.GetDirectoryName(metaFile);
+                    string marker = Path.Combine(dir, MARKER_FILE);
+                    if (!File.Exists(marker))
+                        File.WriteAllText(marker, DateTime.UtcNow.ToString("o"));
+                }
             }
-            catch
-            {
-                return null;
-            }
-#else
-            try
-            {
-                if (!File.Exists(path)) return null;
-                return File.ReadAllBytes(path);
-            }
-            catch
-            {
-                return null;
-            }
-#endif
+            catch { /* best effort */ }
         }
     }
 }

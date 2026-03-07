@@ -194,6 +194,11 @@ namespace Genesis.Sentience.Learning
             if (_initialized) return true;
             if (_initFailed) return false;
 
+            // Wait for background model extraction (started at app launch)
+            ModelBootstrap.Start(); // idempotent safety net
+            if (!ModelBootstrap.IsComplete)
+                return false;
+
             if (_proprioSense == null)
             {
                 _proprioSense = GetComponent<SynthProprioception>();
@@ -274,8 +279,6 @@ namespace Genesis.Sentience.Learning
                 string synthName = gameObject.name;
                 _persister = new StatePersister(
                     Path.Combine(Application.persistentDataPath, saveSubdirectory, synthName));
-
-                ModelBootstrap.ExtractIfNeeded(saveSubdirectory, synthName);
 
                 if (deleteSavesOnStart)
                 {
