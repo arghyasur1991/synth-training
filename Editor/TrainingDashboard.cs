@@ -32,6 +32,7 @@ namespace Genesis.Sentience.Learning.EditorTools
         private bool _foldAlpha = true;
         private bool _foldState = true;
         private bool _foldPerf = true;
+        private bool _foldWorldModel = true;
         private bool _foldDynamic = true;
 
         static readonly Color C_RAW = new Color(0.30f, 0.90f, 0.35f);
@@ -61,6 +62,8 @@ namespace Genesis.Sentience.Learning.EditorTools
         static readonly Color C_ROOTZ = new Color(1.00f, 0.92f, 0.23f);
         static readonly Color C_BLEND = new Color(0.13f, 0.59f, 0.95f);
         static readonly Color C_PHASE_L = new Color(0.80f, 0.80f, 0.80f);
+
+        static readonly Color C_WMLOSS = new Color(0.00f, 0.74f, 0.83f);
 
         static readonly Color C_SPS = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_BUF = new Color(0.40f, 0.70f, 1.00f);
@@ -202,6 +205,26 @@ namespace Genesis.Sentience.Learning.EditorTools
                 if (_foldAlpha = EditorGUILayout.Foldout(_foldAlpha, "Alpha (Entropy Temperature)", true, EditorStyles.foldoutHeader))
                     DrawGraph(120, window,
                         (m.Alpha, C_ALPHA, "Alpha"));
+
+                if (m.WorldModelLoss.Count > 0)
+                {
+                    if (_foldWorldModel = EditorGUILayout.Foldout(_foldWorldModel, "World Model (Dreaming)", true, EditorStyles.foldoutHeader))
+                    {
+                        DrawGraph(120, window,
+                            (m.WorldModelLoss, C_WMLOSS, "WM Loss"));
+
+                        var cls = (ContinuousLearningSkill)_skill;
+                        var sacTrainer = cls.Trainer as SACSkillTrainer;
+                        if (sacTrainer != null)
+                        {
+                            EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+                            Lbl($"WM Loss: {sacTrainer.LastWorldModelLoss:F4}", 120);
+                            Lbl($"Dreams: {sacTrainer.DreamPhaseCount}", 80);
+                            GUILayout.FlexibleSpace();
+                            EditorGUILayout.EndHorizontal();
+                        }
+                    }
+                }
 
                 if (_foldState = EditorGUILayout.Foldout(_foldState, "Agent State", true, EditorStyles.foldoutHeader))
                     DrawGraph(150, window,

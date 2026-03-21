@@ -96,6 +96,17 @@ namespace Genesis.Sentience.Learning
                 _lastWorldModelLoss = _worldModel.TrainStep(_batch);
 
                 int wmSteps = _worldModel.TrainSteps;
+                if (wmSteps <= 100 && wmSteps % 100 == 0 ||
+                    wmSteps <= 1000 && wmSteps % 500 == 0 ||
+                    wmSteps % 5000 == 0)
+                {
+                    Debug.Log($"SACSkillTrainer: World model step {wmSteps} — " +
+                        $"loss={_lastWorldModelLoss:F4}" +
+                        (wmSteps < _config.DreamWarmupSteps
+                            ? $", warmup {wmSteps}/{_config.DreamWarmupSteps}"
+                            : ", dreaming active"));
+                }
+
                 if (wmSteps >= _config.DreamWarmupSteps &&
                     wmSteps % _config.DreamInterval == 0)
                 {
