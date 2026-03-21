@@ -88,7 +88,9 @@ namespace Genesis.Sentience.Learning
             using var scope = NewDisposeScope();
             using (no_grad())
             {
+#pragma warning disable CS0420
                 var net = System.Threading.Volatile.Read(ref _activeInferenceNet);
+#pragma warning restore CS0420
                 var attnWeights = net.forward(z);
                 return (obs * attnWeights).MoveToOuterDisposeScope();
             }
@@ -102,7 +104,9 @@ namespace Genesis.Sentience.Learning
             using var scope = NewDisposeScope();
             using (no_grad())
             {
+#pragma warning disable CS0420
                 var net = System.Threading.Volatile.Read(ref _activeInferenceNet);
+#pragma warning restore CS0420
                 var attnWeights = net.forward(z);
                 var data = attnWeights.data<float>();
                 var result = new float[_obsDim];

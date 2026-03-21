@@ -95,7 +95,9 @@ namespace Genesis.Sentience.Learning
             using var scope = NewDisposeScope();
             using (no_grad())
             {
+#pragma warning disable CS0420
                 var net = System.Threading.Volatile.Read(ref _activeInferenceNet);
+#pragma warning restore CS0420
                 var (zT, pT) = net.forward(obsTensor);
                 var zData = zT.data<float>();
                 var zArr = new float[_zDim];
