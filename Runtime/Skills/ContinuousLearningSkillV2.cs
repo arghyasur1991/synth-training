@@ -131,16 +131,24 @@ namespace Genesis.Sentience.Learning
             _reward = new ContinuingRewardV2(standingZ, _filter.includedQposIdx);
             _reward.SetNearestFrameInterval(nearestFrameInterval);
 
+            // Always compute body weight from the MuJoCo model — needed for
+            // contact reward normalization even if _contact is discovered later.
+            var mjModel = MjScene.Instance.Model;
+            int nb = (int)mjModel->nbody;
+            double totalMass = 0;
+            for (int i = 0; i < nb; i++)
+                totalMass += mjModel->body_mass[i];
+            _bodyWeight = (float)(totalMass * 9.81);
+
             if (_contact != null)
             {
-                var mjModel = MjScene.Instance.Model;
-                int nb = (int)mjModel->nbody;
-                double totalMass = 0;
-                for (int i = 0; i < nb; i++)
-                    totalMass += mjModel->body_mass[i];
-                _bodyWeight = (float)(totalMass * 9.81);
                 Debug.Log($"ContinuousLearningV2: Contact rewards enabled — " +
                     $"bodyWeight={_bodyWeight:F1}N ({totalMass:F2}kg)");
+            }
+            else
+            {
+                Debug.LogWarning($"ContinuousLearningV2: _contact is NULL — " +
+                    $"contact rewards will be zero! bodyWeight={_bodyWeight:F1}N");
             }
 
             if (referenceClips != null && referenceClips.Length > 0)

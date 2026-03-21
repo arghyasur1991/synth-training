@@ -42,6 +42,11 @@ namespace Genesis.Sentience.Learning
         private const float DEFAULT_RAMP_RATE = 1e-5f;
         private const float COMPETENCY_EMA_ALPHA = 0.001f;
 
+        // Time-based minimum ramp: gains increase slowly even without
+        // competency improvement, preventing the chicken-and-egg problem
+        // where the agent can't learn because joints are too weak.
+        private const float TIME_RAMP_PER_STEP = 2e-6f;
+
         private static readonly Dictionary<SynthBone, JointGroup> BoneGroups = new()
         {
             { SynthBone.Hips, JointGroup.Locomotion },
@@ -204,18 +209,22 @@ namespace Genesis.Sentience.Learning
                 _competencyEMA = centeredReward;
                 _prevCompetencyEMA = centeredReward;
                 _competencyInitialized = true;
-                return;
+            }
+            else
+            {
+                _prevCompetencyEMA = _competencyEMA;
+                _competencyEMA += COMPETENCY_EMA_ALPHA * (centeredReward - _competencyEMA);
             }
 
-            _prevCompetencyEMA = _competencyEMA;
-            _competencyEMA += COMPETENCY_EMA_ALPHA * (centeredReward - _competencyEMA);
-
-            float competencyDelta = _competencyEMA - _prevCompetencyEMA;
-            if (competencyDelta <= 0f) return;
+            float competencyDelta = Math.Max(0f, _competencyEMA - _prevCompetencyEMA);
 
             for (int i = 0; i < _totalActDim; i++)
             {
-                _gains[i] += _rampRates[i] * competencyDelta;
+                // Competency-driven ramp (fast when learning)
+                float competencyRamp = _rampRates[i] * competencyDelta;
+                // Time-based minimum ramp (slow but unconditional — prevents deadlock)
+                float timeRamp = TIME_RAMP_PER_STEP;
+                _gains[i] += Math.Max(competencyRamp, timeRamp);
                 if (_gains[i] > _gMax) _gains[i] = _gMax;
             }
         }

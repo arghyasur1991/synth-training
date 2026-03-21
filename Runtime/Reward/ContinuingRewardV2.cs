@@ -116,7 +116,8 @@ namespace Genesis.Sentience.Learning
             float progress,
             in RewardWeightsV2 weights,
             SynthContact contact,
-            float bodyWeight)
+            float bodyWeight,
+            float groundZ = 0f)
         {
             double* pQpos = data->qpos;
             double* pQvel = data->qvel;
@@ -146,7 +147,10 @@ namespace Genesis.Sentience.Learning
             // --- Term 2: Orientation ---
             float rOrientation = (bodyUpZ + 1f) * 0.5f;
 
-            // --- Term 3: Contact force (unified, no proximity) ---
+            // --- Term 3: Contact ---
+            // Two components: force-based (the real signal) + lightweight proximity
+            // bridge (provides gradient when the agent is limp/passive and contact
+            // forces are near-zero). Proximity fades out as progress increases.
             float rContact = 0f;
             if (contact != null && bodyWeight > 1e-3f)
             {
@@ -157,17 +161,35 @@ namespace Genesis.Sentience.Learning
                 float kneeDown = contact.GetSupportForce(SynthContact.SLOT_LEFT_KNEE)
                                + contact.GetSupportForce(SynthContact.SLOT_RIGHT_KNEE);
 
-                float footFrac = Mathf.Clamp01(footDown / bodyWeight);
-                float handFrac = Mathf.Clamp01(handDown / (bodyWeight * 0.3f));
-                float kneeFrac = Mathf.Clamp01(kneeDown / (bodyWeight * 0.5f));
+                float footForceFrac = Mathf.Clamp01(footDown / bodyWeight);
+                float handForceFrac = Mathf.Clamp01(handDown / (bodyWeight * 0.3f));
+                float kneeForceFrac = Mathf.Clamp01(kneeDown / (bodyWeight * 0.5f));
 
-                // Weight by progress: when low progress (fallen), hands/knees matter more;
-                // when high progress (standing), feet matter more.
+                // Proximity bridge: exponential decay from ground. Provides gradient
+                // when the body is lying still and contact forces are near-zero.
+                // Fades out via (1 - progress) so it becomes irrelevant once standing.
+                float proxGate = Mathf.Max(0f, 1f - progress);
+                float footZ = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_FOOT, data) - groundZ;
+                float footZ2 = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_FOOT, data) - groundZ;
+                float handZ = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_HAND, data) - groundZ;
+                float handZ2 = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_HAND, data) - groundZ;
+                float footProx = (Mathf.Exp(-10f * Mathf.Max(0f, footZ)) +
+                                  Mathf.Exp(-10f * Mathf.Max(0f, footZ2))) * 0.5f;
+                float handProx = (Mathf.Exp(-10f * Mathf.Max(0f, handZ)) +
+                                  Mathf.Exp(-10f * Mathf.Max(0f, handZ2))) * 0.5f;
+
+                const float FORCE_W = 0.7f;
+                const float PROX_W = 0.3f;
+
+                float footC = FORCE_W * footForceFrac + PROX_W * proxGate * footProx;
+                float handC = FORCE_W * handForceFrac + PROX_W * proxGate * handProx;
+                float kneeC = FORCE_W * kneeForceFrac;
+
                 float footW = Mathf.Lerp(0.3f, 0.7f, progress);
                 float handW = Mathf.Lerp(0.4f, 0.1f, progress);
                 float kneeW = Mathf.Lerp(0.3f, 0.2f, progress);
 
-                rContact = footW * footFrac + handW * handFrac + kneeW * kneeFrac;
+                rContact = footW * footC + handW * handC + kneeW * kneeC;
             }
 
             // --- Term 4: Energy ---
