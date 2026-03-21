@@ -112,6 +112,9 @@ namespace Genesis.Sentience.Learning
         // --- Buffer ---
         public readonly MetricRingBuffer ReplayCount;
 
+        // --- World Model / Dreaming ---
+        public readonly MetricRingBuffer WorldModelLoss;
+
         // --- Dynamic / skill-specific metrics ---
         private readonly Dictionary<string, MetricRingBuffer> _dynamic
             = new Dictionary<string, MetricRingBuffer>(16);
@@ -155,6 +158,8 @@ namespace Genesis.Sentience.Learning
             ActiveJoints = new MetricRingBuffer(capacity);
 
             ReplayCount = new MetricRingBuffer(capacity);
+
+            WorldModelLoss = new MetricRingBuffer(capacity);
         }
 
         /// <summary>
@@ -164,7 +169,8 @@ namespace Genesis.Sentience.Learning
             in RewardSnapshot reward,
             float alpha, float qLoss, float actorLoss, float alphaLoss,
             float sps, int replayCount,
-            int currStage, int activeJoints)
+            int currStage, int activeJoints,
+            float worldModelLoss = 0f)
         {
             RawReward.Push(reward.RawReward);
             CenteredReward.Push(reward.CenteredReward);
@@ -197,6 +203,8 @@ namespace Genesis.Sentience.Learning
             ActiveJoints.Push(activeJoints);
 
             ReplayCount.Push(replayCount);
+
+            WorldModelLoss.Push(worldModelLoss);
 
             TotalSamples++;
         }

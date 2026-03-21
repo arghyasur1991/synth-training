@@ -408,6 +408,59 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
+        /// Train only the Q-networks on an imagined (dream) batch.
+        /// Skips actor and alpha updates — the policy should only be shaped
+        /// by real-world experience to avoid compounding model errors.
+        /// Dream batches should have ISWeights set to 1.0 (uniform).
+        /// </summary>
+        public void TrainCriticOnly(Batch batch)
+        {
+            using var scope = NewDisposeScope();
+
+            var obs = torch.tensor(batch.Obs).reshape(batch.Size, batch.ObsDim).to(Device);
+            var actions = torch.tensor(batch.Actions).reshape(batch.Size, batch.ActDim).to(Device);
+            var rewards = torch.tensor(batch.Rewards).reshape(batch.Size, 1).to(Device);
+            var nextObs = torch.tensor(batch.NextObs).reshape(batch.Size, batch.ObsDim).to(Device);
+            var dones = torch.tensor(batch.Dones).reshape(batch.Size, 1).to(Device);
+            var isWeights = torch.tensor(batch.ISWeights).reshape(batch.Size, 1).to(Device);
+
+            Tensor nextQValue;
+            using (no_grad())
+            {
+                var (nextAction, _, _) = Actor.forward(nextObs);
+
+                if (_targetSmoothNoise > 0f)
+                {
+                    var noise = (torch.randn_like(nextAction) * _targetSmoothNoise)
+                        .clamp(-_targetNoiseClip, _targetNoiseClip);
+                    nextAction = (nextAction + noise).clamp(-_actionScale, _actionScale);
+                }
+
+                var qf1NextTarget = QF1Target.forward(nextObs, nextAction);
+                var qf2NextTarget = QF2Target.forward(nextObs, nextAction);
+                var minQNext = torch.min(qf1NextTarget, qf2NextTarget);
+                nextQValue = (rewards + _gamma * (1f - dones) * minQNext)
+                    .clamp(-_maxQValue, _maxQValue);
+            }
+
+            var qf1Val = QF1.forward(obs, actions);
+            var qf2Val = QF2.forward(obs, actions);
+
+            var td1 = qf1Val - nextQValue;
+            var td2 = qf2Val - nextQValue;
+            var loss = (isWeights * (td1.pow(2) + td2.pow(2))).mean();
+
+            _qOptimizer.zero_grad();
+            loss.backward();
+            if (_qGradClipNorm > 0f)
+                torch.nn.utils.clip_grad_norm_(ConcatParams(QF1, QF2), _qGradClipNorm);
+            _qOptimizer.step();
+
+            PolyakUpdate(QF1, QF1Target, _tau);
+            PolyakUpdate(QF2, QF2Target, _tau);
+        }
+
+        /// <summary>
         /// Copy training actor weights into the inactive inference actor,
         /// then atomically swap. GetAction() reads the active reference
         /// without any lock, so inference is never blocked.
@@ -615,5 +668,33 @@ namespace Genesis.Sentience.Learning
 
         [UnityEngine.Tooltip("Training steps over which PER beta anneals from PERBetaStart to 1.0.")]
         public int PERBetaAnnealSteps = 100_000;
+
+        [UnityEngine.Header("Dyna-Style Dreaming")]
+
+        [UnityEngine.Tooltip("Enable world-model dreaming: train a forward model on real transitions, " +
+            "periodically generate imagined transitions, and train the critic on them.")]
+        public bool DreamEnabled = true;
+
+        [UnityEngine.Tooltip("Real training steps between dream phases.")]
+        public int DreamInterval = 1000;
+
+        [UnityEngine.Tooltip("Number of imagined batches generated per dream phase.")]
+        public int DreamBatchCount = 4;
+
+        [UnityEngine.Tooltip("Transitions per imagined batch.")]
+        public int DreamBatchSize = 256;
+
+        [UnityEngine.Tooltip("World model training steps before dreaming begins. " +
+            "Ensures model predictions are reasonable before affecting the critic.")]
+        public int DreamWarmupSteps = 5000;
+
+        [UnityEngine.Tooltip("World model learning rate.")]
+        public float WorldModelLr = 3e-4f;
+
+        [UnityEngine.Tooltip("World model first hidden layer size.")]
+        public int WorldModelHidden1 = 256;
+
+        [UnityEngine.Tooltip("World model second hidden layer size.")]
+        public int WorldModelHidden2 = 128;
     }
 }

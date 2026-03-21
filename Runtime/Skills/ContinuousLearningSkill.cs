@@ -110,6 +110,8 @@ namespace Genesis.Sentience.Learning
             assistIntervalSeconds + assistAnnealRate * _assistCount, assistMaxInterval);
         public int CurriculumStage => _curriculum?.CurrentStage ?? -1;
         public int CurriculumActiveJoints => _curriculum?.ActiveActionDim ?? 0;
+        public float WorldModelLoss => SACTrainer?.LastWorldModelLoss ?? 0f;
+        public int DreamPhaseCount => SACTrainer?.DreamPhaseCount ?? 0;
 
         private SACSkillTrainer SACTrainer => _trainer as SACSkillTrainer;
 
@@ -175,8 +177,10 @@ namespace Genesis.Sentience.Learning
             _assistQposBuf = new double[nq];
         }
 
-        protected override float[] BuildFullObs(float[] normalizedPhysicsObs)
+        protected override float[] BuildFullObs(float[] rawPhysicsObs)
         {
+            Buffer.BlockCopy(rawPhysicsObs, 0, _normalizedObs, 0,
+                _physicsObsDim * sizeof(float));
             Buffer.BlockCopy(_smoothedAction, 0, _normalizedObs,
                 _physicsObsDim * sizeof(float), _smoothedAction.Length * sizeof(float));
             return _normalizedObs;
@@ -204,7 +208,8 @@ namespace Genesis.Sentience.Learning
                     _trainer?.StepsPerSecond ?? 0f,
                     _trainer?.ExperienceCount ?? 0,
                     _curriculum?.CurrentStage ?? -1,
-                    _curriculum?.ActiveActionDim ?? 0);
+                    _curriculum?.ActiveActionDim ?? 0,
+                    SACTrainer?.LastWorldModelLoss ?? 0f);
             }
         }
 
@@ -333,6 +338,11 @@ namespace Genesis.Sentience.Learning
             }
             d["assistCount"] = _assistCount;
             d["fallenTimer"] = _fallenTimer;
+            if (SACTrainer != null && SACTrainer.DreamEnabled)
+            {
+                d["wmLoss"] = SACTrainer.LastWorldModelLoss;
+                d["dreamCount"] = SACTrainer.DreamPhaseCount;
+            }
             return d;
         }
 
