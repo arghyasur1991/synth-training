@@ -115,6 +115,14 @@ namespace Genesis.Sentience.Learning
         // --- World Model / Dreaming ---
         public readonly MetricRingBuffer WorldModelLoss;
 
+        // --- V2 metrics ---
+        public readonly MetricRingBuffer Progress;
+        public readonly MetricRingBuffer ContactReward;
+        public readonly MetricRingBuffer EncoderAuxLoss;
+        public readonly MetricRingBuffer AvgGain;
+        public readonly MetricRingBuffer LocoGain;
+        public readonly MetricRingBuffer FineGain;
+
         // --- Dynamic / skill-specific metrics ---
         private readonly Dictionary<string, MetricRingBuffer> _dynamic
             = new Dictionary<string, MetricRingBuffer>(16);
@@ -160,6 +168,13 @@ namespace Genesis.Sentience.Learning
             ReplayCount = new MetricRingBuffer(capacity);
 
             WorldModelLoss = new MetricRingBuffer(capacity);
+
+            Progress = new MetricRingBuffer(capacity);
+            ContactReward = new MetricRingBuffer(capacity);
+            EncoderAuxLoss = new MetricRingBuffer(capacity);
+            AvgGain = new MetricRingBuffer(capacity);
+            LocoGain = new MetricRingBuffer(capacity);
+            FineGain = new MetricRingBuffer(capacity);
         }
 
         /// <summary>
@@ -205,6 +220,46 @@ namespace Genesis.Sentience.Learning
             ReplayCount.Push(replayCount);
 
             WorldModelLoss.Push(worldModelLoss);
+
+            TotalSamples++;
+        }
+
+        /// <summary>
+        /// Record one sample of V2 metrics. Used by ContinuousLearningSkillV2.
+        /// </summary>
+        public void Sample(
+            in RewardSnapshotV2 reward,
+            float alpha, float qLoss, float actorLoss, float alphaLoss,
+            float sps, int replayCount,
+            float worldModelLoss, float encoderAuxLoss,
+            float avgGain, float locoGain, float fineGain)
+        {
+            RawReward.Push(reward.RawReward);
+            CenteredReward.Push(reward.CenteredReward);
+            RewardBar.Push(reward.RewardBar);
+
+            Height.Push(reward.Height);
+            Orientation.Push(reward.Orientation);
+            Energy.Push(reward.Energy);
+            Imitation.Push(reward.Imitation);
+            RootZ.Push(reward.RootZ);
+
+            ContactReward.Push(reward.Contact);
+            Progress.Push(reward.Progress);
+
+            Alpha.Push(alpha);
+            QLoss.Push(qLoss);
+            ActorLoss.Push(actorLoss);
+            AlphaLoss.Push(alphaLoss);
+            TrainingSPS.Push(sps);
+
+            ReplayCount.Push(replayCount);
+
+            WorldModelLoss.Push(worldModelLoss);
+            EncoderAuxLoss.Push(encoderAuxLoss);
+            AvgGain.Push(avgGain);
+            LocoGain.Push(locoGain);
+            FineGain.Push(fineGain);
 
             TotalSamples++;
         }

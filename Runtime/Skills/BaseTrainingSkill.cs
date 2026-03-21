@@ -163,6 +163,13 @@ namespace Genesis.Sentience.Learning
 
         // ── Virtual hooks (override to customize) ───────────────────────
 
+        /// <summary>
+        /// Transform normalized observations before passing to the actor/buffer.
+        /// V2 overrides this to apply the StateEncoder + ObservationAttention.
+        /// Default: identity (returns input unchanged).
+        /// </summary>
+        protected virtual float[] TransformObservation(float[] normalizedObs) => normalizedObs;
+
         /// <summary>Check if the current episode should terminate. Default: false (continuous).</summary>
         protected virtual bool CheckTermination() => false;
 
@@ -383,7 +390,7 @@ namespace Genesis.Sentience.Learning
                 _obsNormalizer.NormalizeInPlace(rawFullObs, _normalizedObs);
             else
                 _obsNormalizer.NormalizeAndUpdateInPlace(rawFullObs, _normalizedObs);
-            var fullObs = _normalizedObs;
+            var fullObs = TransformObservation(_normalizedObs);
 
             if (ContainsNaN(fullObs))
             {

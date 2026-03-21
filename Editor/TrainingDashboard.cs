@@ -34,6 +34,9 @@ namespace Genesis.Sentience.Learning.EditorTools
         private bool _foldPerf = true;
         private bool _foldWorldModel = true;
         private bool _foldDynamic = true;
+        private bool _foldV2Reward = true;
+        private bool _foldV2Encoder = true;
+        private bool _foldV2Curriculum = true;
 
         static readonly Color C_RAW = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_CENTERED = new Color(0.40f, 0.70f, 1.00f);
@@ -64,6 +67,12 @@ namespace Genesis.Sentience.Learning.EditorTools
         static readonly Color C_PHASE_L = new Color(0.80f, 0.80f, 0.80f);
 
         static readonly Color C_WMLOSS = new Color(0.00f, 0.74f, 0.83f);
+        static readonly Color C_PROGRESS = new Color(0.40f, 0.90f, 0.40f);
+        static readonly Color C_CONTACT_R = new Color(0.01f, 0.66f, 0.96f);
+        static readonly Color C_ENCAUX = new Color(0.91f, 0.12f, 0.39f);
+        static readonly Color C_AVGGAIN = new Color(0.30f, 0.90f, 0.35f);
+        static readonly Color C_LOCOGAIN = new Color(0.40f, 0.70f, 1.00f);
+        static readonly Color C_FINEGAIN = new Color(1.00f, 0.60f, 0.00f);
 
         static readonly Color C_SPS = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_BUF = new Color(0.40f, 0.70f, 1.00f);
@@ -151,8 +160,9 @@ namespace Genesis.Sentience.Learning.EditorTools
             int window = WindowSamples[_windowIdx];
 
             bool isContinuous = _skill is ContinuousLearningSkill;
+            bool isV2 = _skill is ContinuousLearningSkillV2;
 
-            DrawSummary(m, isContinuous);
+            DrawSummary(m, isContinuous, isV2);
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
 
@@ -226,10 +236,84 @@ namespace Genesis.Sentience.Learning.EditorTools
                     }
                 }
 
-                if (_foldState = EditorGUILayout.Foldout(_foldState, "Agent State", true, EditorStyles.foldoutHeader))
+                if (!isV2)
+                {
+                    if (_foldState = EditorGUILayout.Foldout(_foldState, "Agent State", true, EditorStyles.foldoutHeader))
+                        DrawGraph(150, window,
+                            (m.RootZ, C_ROOTZ, "RootZ"),
+                            (m.StandBlend, C_BLEND, "StandBlend"));
+                }
+            }
+
+            // V2-specific sections
+            if (isV2)
+            {
+                if (_foldV2Reward = EditorGUILayout.Foldout(_foldV2Reward, "V2 Reward Components", true, EditorStyles.foldoutHeader))
+                {
                     DrawGraph(150, window,
-                        (m.RootZ, C_ROOTZ, "RootZ"),
-                        (m.StandBlend, C_BLEND, "StandBlend"));
+                        (m.RawReward, C_RAW, "Raw"),
+                        (m.CenteredReward, C_CENTERED, "Centered"),
+                        (m.RewardBar, C_BAR, "Bar"));
+                    DrawGraph(150, window,
+                        (m.Height, C_HEIGHT, "Height"),
+                        (m.Orientation, C_ORIENT, "Orient"),
+                        (m.ContactReward, C_CONTACT_R, "Contact"),
+                        (m.Energy, C_ENERGY, "Energy"),
+                        (m.Imitation, C_IMIT, "Imitation"));
+                }
+
+                if (_foldV2Encoder = EditorGUILayout.Foldout(_foldV2Encoder, "Encoder & Progress", true, EditorStyles.foldoutHeader))
+                {
+                    DrawGraph(120, window,
+                        (m.Progress, C_PROGRESS, "Progress"),
+                        (m.RootZ, C_ROOTZ, "RootZ"));
+                    DrawGraph(100, window,
+                        (m.EncoderAuxLoss, C_ENCAUX, "Enc Aux Loss"));
+
+                    var v2Skill = (ContinuousLearningSkillV2)_skill;
+                    EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+                    Lbl($"Progress: {v2Skill.Progress:F3}", 100);
+                    Lbl($"Enc Loss: {v2Skill.EncoderAuxLoss:F4}", 120);
+                    GUILayout.FlexibleSpace();
+                    EditorGUILayout.EndHorizontal();
+                }
+
+                if (_foldV2Curriculum = EditorGUILayout.Foldout(_foldV2Curriculum, "Smooth Actuator Curriculum", true, EditorStyles.foldoutHeader))
+                {
+                    DrawGraph(120, window,
+                        (m.AvgGain, C_AVGGAIN, "Avg Gain"),
+                        (m.LocoGain, C_LOCOGAIN, "Loco Gain"),
+                        (m.FineGain, C_FINEGAIN, "Fine Gain"));
+                }
+
+                if (m.WorldModelLoss.Count > 0)
+                {
+                    if (_foldWorldModel = EditorGUILayout.Foldout(_foldWorldModel, "Structured World Model", true, EditorStyles.foldoutHeader))
+                    {
+                        DrawGraph(120, window,
+                            (m.WorldModelLoss, C_WMLOSS, "WM Loss"));
+
+                        var v2Trainer = ((ContinuousLearningSkillV2)_skill).Trainer as SACSkillTrainerV2;
+                        if (v2Trainer != null)
+                        {
+                            EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+                            Lbl($"WM Loss: {v2Trainer.LastWorldModelLoss:F4}", 120);
+                            Lbl($"Dreams: {v2Trainer.DreamPhaseCount}", 80);
+                            GUILayout.FlexibleSpace();
+                            EditorGUILayout.EndHorizontal();
+                        }
+                    }
+                }
+
+                if (_foldTraining = EditorGUILayout.Foldout(_foldTraining, "Training Losses (SAC)", true, EditorStyles.foldoutHeader))
+                    DrawGraph(150, window,
+                        (m.QLoss, C_QLOSS, "QLoss"),
+                        (m.ActorLoss, C_ALOSS, "ActorLoss"),
+                        (m.AlphaLoss, C_ALPHA_L, "AlphaLoss"));
+
+                if (_foldAlpha = EditorGUILayout.Foldout(_foldAlpha, "Alpha (Entropy Temperature)", true, EditorStyles.foldoutHeader))
+                    DrawGraph(120, window,
+                        (m.Alpha, C_ALPHA, "Alpha"));
             }
 
             // Dynamic metrics from any skill's GetDiagnostics()
@@ -300,11 +384,21 @@ namespace Genesis.Sentience.Learning.EditorTools
             EditorGUILayout.EndHorizontal();
         }
 
-        void DrawSummary(TrainingMetrics m, bool isContinuous)
+        void DrawSummary(TrainingMetrics m, bool isContinuous, bool isV2 = false)
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
 
-            if (isContinuous)
+            if (isV2)
+            {
+                var v2 = (ContinuousLearningSkillV2)_skill;
+                float p = v2.Progress;
+                var progCol = Color.Lerp(PhaseColors[0], PhaseColors[2], p);
+                var oldCol = GUI.contentColor;
+                GUI.contentColor = progCol;
+                EditorGUILayout.LabelField($"V2 p={p:F2}", EditorStyles.boldLabel, GUILayout.Width(80));
+                GUI.contentColor = oldCol;
+            }
+            else if (isContinuous)
             {
                 var cls = (ContinuousLearningSkill)_skill;
                 var phase = cls.CurrentPhase;
@@ -320,12 +414,14 @@ namespace Genesis.Sentience.Learning.EditorTools
             }
 
             Lbl($"Raw: {m.RawReward.Latest:F3}", 90);
-            if (isContinuous)
+            if (isContinuous || isV2)
             {
                 Lbl($"Ctr: {m.CenteredReward.Latest:F3}", 90);
                 Lbl($"\u03B1: {m.Alpha.Latest:F3}", 65);
                 Lbl($"QL: {m.QLoss.Latest:F4}", 80);
             }
+            if (isV2)
+                Lbl($"Gain: {m.AvgGain.Latest:F2}", 70);
             Lbl($"SPS: {m.TrainingSPS.Latest:F0}", 65);
             Lbl($"Buf: {m.ReplayCount.Latest:F0}", 80);
             Lbl($"Dec: {_skill.TotalDecisions:N0}", 100);
