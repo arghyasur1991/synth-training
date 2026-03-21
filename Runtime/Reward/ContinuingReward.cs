@@ -324,6 +324,9 @@ namespace Genesis.Sentience.Learning
             if (bodyUpZ < TILT_THRESHOLD)
                 standBlend *= Mathf.Clamp01((bodyUpZ - 0.3f) / (TILT_THRESHOLD - 0.3f));
 
+            float risingBlend = Mathf.Clamp01(standBlend * 3f);
+            float fallenEmphasis = 1f - risingBlend;
+
             float rRecovery = 0f;
             if (_prevRootZInitialized)
             {
@@ -372,7 +375,11 @@ namespace Genesis.Sentience.Learning
 
             if (contact != null && bodyWeight > 1e-3f)
             {
-                // Foot: proximity (always provides gradient) + contact force bonus
+                // Proximity is near-constant when fallen (limbs on ground ≈ 1.0), but
+                // contact force varies with active pushing/bracing. Gate only proximity
+                // so the force gradient survives for learning push-up and weight transfer.
+                float proxGate = Mathf.Lerp(0.2f, 1f, risingBlend);
+
                 float footZ_L = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_FOOT, data);
                 float footZ_R = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_FOOT, data);
                 float footProx = 0.5f * (Mathf.Exp(-PROXIMITY_SCALE * Mathf.Max(0f, footZ_L))
@@ -382,9 +389,8 @@ namespace Genesis.Sentience.Learning
                                + contact.GetSupportForce(SynthContact.SLOT_RIGHT_FOOT);
                 float footContact = Mathf.Clamp01(footDown / bodyWeight);
 
-                rFootSupport = PROXIMITY_WEIGHT * footProx + CONTACT_WEIGHT * footContact;
+                rFootSupport = proxGate * PROXIMITY_WEIGHT * footProx + CONTACT_WEIGHT * footContact;
 
-                // Hand: same proximity + contact structure
                 float handZ_L = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_HAND, data);
                 float handZ_R = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_HAND, data);
                 float handProx = 0.5f * (Mathf.Exp(-PROXIMITY_SCALE * Mathf.Max(0f, handZ_L))
@@ -394,7 +400,7 @@ namespace Genesis.Sentience.Learning
                                + contact.GetSupportForce(SynthContact.SLOT_RIGHT_HAND);
                 float handContact = Mathf.Clamp01(handDown / (bodyWeight * 0.3f));
 
-                rHandBrace = PROXIMITY_WEIGHT * handProx + CONTACT_WEIGHT * handContact;
+                rHandBrace = proxGate * PROXIMITY_WEIGHT * handProx + CONTACT_WEIGHT * handContact;
 
                 // Active support: limbs near ground OR bearing weight
                 float threshold = bodyWeight * SUPPORT_FORCE_THRESHOLD_FRAC;
@@ -412,16 +418,12 @@ namespace Genesis.Sentience.Learning
                 rActiveSupport = Mathf.Clamp01(supportCount / 3f);
             }
 
-            // Phase-aware weight rebalancing: when fallen, contact/comfort are near-constant
-            // (everything is on the ground) and drown out the gradient signals (height, orient).
-            // risingBlend ramps from 0 (flat) to 1 (early recovery), gating the constants.
-            float risingBlend = Mathf.Clamp01(standBlend * 3f);
-            float fallenEmphasis = 1f - risingBlend;
-
-            // Contact/comfort: suppress when fallen (constant, no gradient), restore during recovery
-            float footSupportWeight = W_FOOT_SUPPORT * Mathf.Lerp(0.15f, 1f, risingBlend);
-            float handBraceWeight = W_HAND_BRACE * risingBlend;
-            float activeSupportWeight = W_ACTIVE_SUPPORT * risingBlend;
+            // Phase-aware weight rebalancing: proximity is suppressed via proxGate inside
+            // rFootSupport/rHandBrace (constant when fallen). Outer weights keep minimum
+            // floors so contact force gradient always contributes to learning.
+            float footSupportWeight = W_FOOT_SUPPORT * Mathf.Lerp(0.4f, 1f, risingBlend);
+            float handBraceWeight = W_HAND_BRACE * Mathf.Lerp(0.5f, 1f, risingBlend);
+            float activeSupportWeight = W_ACTIVE_SUPPORT * Mathf.Lerp(0.3f, 1f, risingBlend);
             float comfortWeight = W_COMFORT * Mathf.Lerp(0.2f, 1f, risingBlend);
 
             // Height + orientation: amplify when fallen (these carry the actual gradient)
