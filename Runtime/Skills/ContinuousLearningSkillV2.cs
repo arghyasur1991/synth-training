@@ -59,9 +59,9 @@ namespace Genesis.Sentience.Learning
         [Tooltip("Enable smooth per-joint gain curriculum")]
         public bool enableCurriculum = true;
 
-        [Tooltip("Minimum joint gain (passive spring-damped)")]
-        [Range(0.01f, 0.5f)]
-        public float gainMin = 0.1f;
+        [Tooltip("Minimum joint gain — must be high enough to overcome gravity")]
+        [Range(0.1f, 0.8f)]
+        public float gainMin = 0.3f;
 
         [Tooltip("Base ramp rate per competency improvement")]
         public float gainRampRate = 1e-5f;
@@ -161,13 +161,13 @@ namespace Genesis.Sentience.Learning
                     gainMin, 1.0f, gainRampRate);
             }
 
-            // Set target entropy proportional to effective action dimensions.
-            // With smooth curriculum at gainMin, the effective DOF is actDim * gainMin.
-            // This prevents alpha from diverging when most joints are near-passive.
-            float effectiveDims = _filter.actDim * gainMin;
-            V2Trainer?.SetTargetEntropy((int)Mathf.Max(4f, effectiveDims), sacConfig.TargetEntropyScale);
+            // Target entropy must match the FULL action dim because SAC computes
+            // log_prob over all dimensions regardless of curriculum gains.
+            // Using actDim * gain would create an irreducible mismatch where
+            // the alpha optimizer can never satisfy the target.
+            V2Trainer?.SetTargetEntropy(_filter.actDim, sacConfig.TargetEntropyScale);
             Debug.Log($"ContinuousLearningV2: Target entropy set for " +
-                $"{effectiveDims:F0} effective dims (actDim={_filter.actDim}, gainMin={gainMin:F2})");
+                $"actDim={_filter.actDim}, scale={sacConfig.TargetEntropyScale}");
 
             Debug.Log($"ContinuousLearningV2: Initialized — " +
                 $"reward weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
@@ -223,13 +223,6 @@ namespace Genesis.Sentience.Learning
             }
 
             _curriculum?.Step(_reward.LastCenteredReward);
-
-            // Periodically update target entropy as gains ramp up
-            if (_curriculum != null && _totalDecisions % 500 == 0)
-            {
-                float effectiveDims = _filter.actDim * _curriculum.AverageGain;
-                V2Trainer?.SetTargetEntropy((int)Mathf.Max(4f, effectiveDims), sacConfig.TargetEntropyScale);
-            }
         }
 
         protected override void PostProcessAction(float[] rawAction)

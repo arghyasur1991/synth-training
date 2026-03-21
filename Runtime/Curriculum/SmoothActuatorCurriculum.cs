@@ -37,15 +37,16 @@ namespace Genesis.Sentience.Learning
     [Serializable]
     public class SmoothActuatorCurriculum
     {
-        private const float DEFAULT_G_MIN = 0.1f;
+        private const float DEFAULT_G_MIN = 0.3f;
         private const float DEFAULT_G_MAX = 1.0f;
         private const float DEFAULT_RAMP_RATE = 1e-5f;
         private const float COMPETENCY_EMA_ALPHA = 0.001f;
 
-        // Time-based minimum ramp: gains increase slowly even without
-        // competency improvement, preventing the chicken-and-egg problem
-        // where the agent can't learn because joints are too weak.
-        private const float TIME_RAMP_PER_STEP = 2e-6f;
+        // Time-based minimum ramp: gains increase even without competency
+        // improvement. At 1e-4/step and 30 SPS, gains increase by ~0.003/sec,
+        // reaching 0.5 from 0.3 in ~67 seconds. Fast enough to prevent
+        // stagnation, slow enough for the policy to adapt.
+        private const float TIME_RAMP_PER_STEP = 1e-4f;
 
         private static readonly Dictionary<SynthBone, JointGroup> BoneGroups = new()
         {
