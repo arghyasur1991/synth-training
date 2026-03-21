@@ -12,7 +12,7 @@ namespace Genesis.Sentience.Learning
     public struct RewardSnapshotV2
     {
         public float Height, Orientation, Contact, Energy, Imitation;
-        public float Progress, RootZ;
+        public float HeightFraction, RootZ;
         public float RawReward, CenteredReward, RewardBar;
     }
 
@@ -40,13 +40,14 @@ namespace Genesis.Sentience.Learning
     }
 
     /// <summary>
-    /// V2 continuing reward: 5 terms, no discrete phases, continuous modulation
-    /// via a learned progress signal from the actor's encoder bottleneck.
+    /// V2 continuing reward: 5 terms with fixed weights. No learned progress signal,
+    /// no discrete phases. The physics provides the curriculum — heightFraction
+    /// naturally modulates what matters (contact emphasis when fallen, imitation
+    /// gated until partially upright).
     ///
     /// Compared to V1 (ContinuingReward):
     ///   - 5 terms instead of 12 (height, orientation, contact, energy, imitation)
     ///   - No AgentPhase enum, no discrete phase bonuses
-    ///   - Weight modulation via continuous progress ∈ [0,1] from actor encoder
     ///   - All base weights are PBT-configurable via RewardWeightsV2
     ///
     /// Keeps: reward centering, reference frame indexing, amortized nearest-frame search.
@@ -104,15 +105,13 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
-        /// Compute the V2 continuing reward.
-        /// progress: learned continuous signal from actor's encoder bottleneck, ∈ [0,1].
-        /// weights: PBT-configurable base weights.
+        /// Compute the V2 continuing reward. No progress signal — the physics
+        /// (heightFraction) naturally provides the curriculum.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe float Compute(
             MujocoLib.mjData_* data,
             MujocoLib.mjModel_* model,
-            float progress,
             in RewardWeightsV2 weights,
             SynthContact contact,
             float bodyWeight,
@@ -147,9 +146,10 @@ namespace Genesis.Sentience.Learning
             float rOrientation = (bodyUpZ + 1f) * 0.5f;
 
             // --- Term 3: Contact ---
-            // Two components: force-based (the real signal) + lightweight proximity
-            // bridge (provides gradient when the agent is limp/passive and contact
-            // forces are near-zero). Proximity fades out as progress increases.
+            // Force-based + proximity bridge. Proximity fades as height increases
+            // (no need for it once limbs are off the ground). Internal body-part
+            // weights shift with heightFraction: hands important when fallen,
+            // feet important when standing.
             float rContact = 0f;
             if (contact != null && bodyWeight > 1e-3f)
             {
@@ -164,10 +164,7 @@ namespace Genesis.Sentience.Learning
                 float handForceFrac = Mathf.Clamp01(handDown / (bodyWeight * 0.3f));
                 float kneeForceFrac = Mathf.Clamp01(kneeDown / (bodyWeight * 0.5f));
 
-                // Proximity bridge: exponential decay from ground. Provides gradient
-                // when the body is lying still and contact forces are near-zero.
-                // Fades out via (1 - progress) so it becomes irrelevant once standing.
-                float proxGate = Mathf.Max(0f, 1f - progress);
+                float proxGate = Mathf.Max(0f, 1f - heightFraction);
                 float footZ = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_FOOT, data) - groundZ;
                 float footZ2 = contact.GetBodyWorldZ(SynthContact.SLOT_RIGHT_FOOT, data) - groundZ;
                 float handZ = contact.GetBodyWorldZ(SynthContact.SLOT_LEFT_HAND, data) - groundZ;
@@ -184,9 +181,9 @@ namespace Genesis.Sentience.Learning
                 float handC = FORCE_W * handForceFrac + PROX_W * proxGate * handProx;
                 float kneeC = FORCE_W * kneeForceFrac;
 
-                float footW = Mathf.Lerp(0.3f, 0.7f, progress);
-                float handW = Mathf.Lerp(0.4f, 0.1f, progress);
-                float kneeW = Mathf.Lerp(0.3f, 0.2f, progress);
+                float footW = Mathf.Lerp(0.3f, 0.7f, heightFraction);
+                float handW = Mathf.Lerp(0.4f, 0.1f, heightFraction);
+                float kneeW = Mathf.Lerp(0.3f, 0.2f, heightFraction);
 
                 rContact = footW * footC + handW * handC + kneeW * kneeC;
             }
@@ -226,33 +223,27 @@ namespace Genesis.Sentience.Learning
                 rImitation = Mathf.Exp(-IMITATION_SCALE * _cachedNearestDist);
             }
 
-            // --- Continuous weight modulation via progress ---
-            // Progress-based emphasis: when progress is low (fallen), amplify
-            // height and contact (the getting-up signals). When high, amplify
-            // orientation, imitation, energy (the refinement signals).
-            float fallenEmphasis = 1f - progress;
-            float wHeight = weights.Height * (1f + 0.8f * fallenEmphasis);
-            float wOrientation = weights.Orientation * (0.3f + 0.7f * progress);
-            float wContact = weights.Contact * (1f + 0.5f * fallenEmphasis);
-            float wEnergy = weights.Energy * (0.3f + 0.7f * progress);
-            float wImitation = weights.Imitation * Mathf.Max(0.15f, progress);
+            // --- Fixed weights with physics-gated imitation ---
+            // Imitation is only meaningful once partially upright; smooth gate
+            // ramps from 0 at 30% height to full at 70% height.
+            float imitGate = Mathf.Clamp01((heightFraction - 0.3f) * 2.5f);
 
             float rawReward = ALIVE_BONUS
-                            + wHeight * rHeight
-                            + wOrientation * rOrientation
-                            + wContact * rContact
-                            + wEnergy * rEnergy
-                            + wImitation * rImitation;
+                            + weights.Height * rHeight
+                            + weights.Orientation * rOrientation
+                            + weights.Contact * rContact
+                            + weights.Energy * rEnergy
+                            + weights.Imitation * imitGate * rImitation;
 
             _lastRawReward = rawReward;
             _lastSnapshot = new RewardSnapshotV2
             {
-                Height = wHeight * rHeight,
-                Orientation = wOrientation * rOrientation,
-                Contact = wContact * rContact,
-                Energy = wEnergy * rEnergy,
-                Imitation = wImitation * rImitation,
-                Progress = progress,
+                Height = weights.Height * rHeight,
+                Orientation = weights.Orientation * rOrientation,
+                Contact = weights.Contact * rContact,
+                Energy = weights.Energy * rEnergy,
+                Imitation = weights.Imitation * imitGate * rImitation,
+                HeightFraction = heightFraction,
                 RootZ = rootZ,
                 RawReward = rawReward,
             };

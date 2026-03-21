@@ -19,8 +19,8 @@ namespace Genesis.Sentience.Learning
         // V1 flat-MLP layers (used when _latentDim == 0)
         private readonly Linear fc1, fc2;
 
-        // Encoder-in-actor layers (used when _latentDim > 0)
-        private readonly Linear encFc1, encFc2, progressHead, policyFc1, policyFc2;
+        // Encoder bottleneck layers (used when _latentDim > 0)
+        private readonly Linear encFc1, encFc2, policyFc1, policyFc2;
 
         private readonly Linear fcMean, fcLogStd;
         private readonly float _actionScale;
@@ -28,7 +28,6 @@ namespace Genesis.Sentience.Learning
         private readonly int _latentDim;
 
         public int LatentDim => _latentDim;
-        public float LastProgress { get; private set; }
 
         public SACActorNetwork(int obsDim, int actDim, int hidden1 = 256, int hidden2 = 256,
             float actionScale = 1f, float actionBias = 0f, int latentDim = 0, int encoderHidden = 128)
@@ -42,7 +41,6 @@ namespace Genesis.Sentience.Learning
             {
                 encFc1 = Linear(obsDim, encoderHidden);
                 encFc2 = Linear(encoderHidden, latentDim);
-                progressHead = Linear(latentDim, 1);
                 policyFc1 = Linear(latentDim, hidden1);
                 policyFc2 = Linear(hidden1, hidden2);
             }
@@ -65,7 +63,6 @@ namespace Genesis.Sentience.Learning
             {
                 var h = functional.relu(encFc1.forward(obs));
                 var z = encFc2.forward(h);
-                LastProgress = torch.sigmoid(progressHead.forward(z)).mean().item<float>();
                 x = functional.relu(policyFc1.forward(z));
                 x = functional.relu(policyFc2.forward(x));
             }
@@ -92,20 +89,6 @@ namespace Genesis.Sentience.Learning
             var meanAction = torch.tanh(mean) * _actionScale + _actionBias;
 
             return (action, logProb, meanAction);
-        }
-
-        /// <summary>
-        /// Run only the encoder layers to get progress. Much cheaper than full forward.
-        /// Returns 0 when no encoder is configured (latentDim == 0).
-        /// </summary>
-        public float InferProgressOnly(Tensor obs)
-        {
-            if (_latentDim <= 0) return 0f;
-            var h = functional.relu(encFc1.forward(obs));
-            var z = encFc2.forward(h);
-            float p = torch.sigmoid(progressHead.forward(z)).mean().item<float>();
-            LastProgress = p;
-            return p;
         }
     }
 
@@ -183,15 +166,12 @@ namespace Genesis.Sentience.Learning
         private float _lastActorLoss;
         private float _lastAlphaLoss;
 
-        private float _lastProgress;
-
         public float Alpha => (float)Math.Exp(_logAlpha.item<float>());
         public float LastQLoss => _lastQLoss;
         public float LastActorLoss => _lastActorLoss;
         public float LastAlphaLoss => _lastAlphaLoss;
         public int TrainSteps => _trainStep;
         public float TargetEntropy => _targetEntropy;
-        public float LastProgress => _lastProgress;
         public bool HasEncoder => Actor.LatentDim > 0;
 
         public void SetTargetEntropy(int activeDims, float entropyScale)
@@ -304,7 +284,6 @@ namespace Genesis.Sentience.Learning
                 _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
                 var actor = Volatile.Read(ref _activeInferenceActor);
                 var (action, _, _) = actor.forward(_infObsTensor);
-                _lastProgress = actor.LastProgress;
                 CopyTensorToBuffer(action, _actionBuffer);
             }
 
@@ -320,31 +299,10 @@ namespace Genesis.Sentience.Learning
                 _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
                 var actor = Volatile.Read(ref _activeInferenceActor);
                 var (_, _, meanAction) = actor.forward(_infObsTensor);
-                _lastProgress = actor.LastProgress;
                 CopyTensorToBuffer(meanAction, _actionBuffer);
             }
 
             return _actionBuffer;
-        }
-
-        /// <summary>
-        /// Run only the encoder part of the actor to get progress.
-        /// Cheaper than full forward — skips policy layers and sampling.
-        /// Returns 0 when no encoder is configured (LatentDim == 0).
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public float InferProgress(float[] obs)
-        {
-            if (!HasEncoder) return 0f;
-            using var scope = NewDisposeScope();
-            using (no_grad())
-            {
-                _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
-                var actor = Volatile.Read(ref _activeInferenceActor);
-                float p = actor.InferProgressOnly(_infObsTensor);
-                _lastProgress = p;
-                return p;
-            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

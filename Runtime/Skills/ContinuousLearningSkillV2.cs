@@ -11,16 +11,15 @@ using Debug = UnityEngine.Debug;
 namespace Genesis.Sentience.Learning
 {
     /// <summary>
-    /// V2 continuous learning skill with encoder-in-actor architecture.
+    /// V2 continuous learning skill — simplified reward, no progress signal.
     ///
-    /// The SAC actor network contains an encoder bottleneck that compresses
-    /// observations to a latent z, from which a progress signal branches off.
-    /// RL gradients train the encoder end-to-end — no separate encoder,
-    /// no auxiliary loss, no attention module.
+    /// When LatentDim > 0, the actor compresses observations through an
+    /// encoder bottleneck for better representation — but no separate
+    /// progress head. The physics provides the curriculum via heightFraction.
     ///
     /// Compared to V1 (ContinuousLearningSkill):
     ///   - 5-term reward (height, orientation, contact, energy, imitation)
-    ///   - No discrete AgentPhase — continuous progress from actor's encoder
+    ///   - No discrete AgentPhase — physics-based gating via heightFraction
     ///   - No ActionCurriculum — all joints active from step 1
     ///   - PBT-configurable reward weights
     ///   - Same V1 SACSkillTrainer + WorldModel for dreaming
@@ -63,11 +62,8 @@ namespace Genesis.Sentience.Learning
 
         private ContinuingRewardV2 _reward;
         private float _bodyWeight;
-        private float _lastProgress;
 
         // ── Diagnostics ─────────────────────────────────────────────────
-
-        public float Progress => _lastProgress;
         public float RawReward => _reward?.LastRawReward ?? 0f;
         public float CenteredReward => _reward?.LastCenteredReward ?? 0f;
         public float RewardBar => _reward?.RewardBar ?? 0f;
@@ -132,8 +128,8 @@ namespace Genesis.Sentience.Learning
                 IndexReferenceClips();
 
             Debug.Log($"ContinuousLearningV2: Initialized — " +
-                $"latentDim={sacConfig.LatentDim}, encoderHidden={sacConfig.EncoderHidden}, " +
-                $"reward weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
+                $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim}), " +
+                $"weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
                 $"C={rewardWeights.Contact:F2} E={rewardWeights.Energy:F2} I={rewardWeights.Imitation:F2}");
         }
 
@@ -146,18 +142,10 @@ namespace Genesis.Sentience.Learning
             return _normalizedObs;
         }
 
-        protected override float[] TransformObservation(float[] normalizedObs)
-        {
-            var agent = SACTrainer?.Agent;
-            if (agent != null && agent.HasEncoder)
-                _lastProgress = agent.InferProgress(normalizedObs);
-            return normalizedObs;
-        }
-
         protected override unsafe float ComputeReward()
         {
             return _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
-                _lastProgress, in rewardWeights, _contact, _bodyWeight);
+                in rewardWeights, _contact, _bodyWeight);
         }
 
         protected override void OnTransitionStored(float reward, bool done)
@@ -212,7 +200,6 @@ namespace Genesis.Sentience.Learning
             {
                 d["rawReward"] = _reward.LastRawReward;
                 d["rewardBar"] = _reward.RewardBar;
-                d["progress"] = _lastProgress;
             }
             if (SACTrainer != null)
             {

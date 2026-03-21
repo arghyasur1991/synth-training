@@ -257,16 +257,15 @@ namespace Genesis.Sentience.Learning.EditorTools
                         (m.Imitation, C_IMIT, "Imitation"));
                 }
 
-                if (_foldV2Progress = EditorGUILayout.Foldout(_foldV2Progress, "Progress & State", true, EditorStyles.foldoutHeader))
+                if (_foldV2Progress = EditorGUILayout.Foldout(_foldV2Progress, "Height & State", true, EditorStyles.foldoutHeader))
                 {
                     DrawGraph(120, window,
-                        (m.Progress, C_PROGRESS, "Progress"),
+                        (m.HeightFraction, C_PROGRESS, "Height%"),
                         (m.RootZ, C_ROOTZ, "RootZ"));
 
-                    var v2Skill = (ContinuousLearningSkillV2)_skill;
                     EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
-                    Lbl($"Progress: {v2Skill.Progress:F3}", 100);
-                    Lbl($"LatentDim: {v2Skill.sacConfig.LatentDim}", 100);
+                    Lbl($"Height%: {m.HeightFraction.Latest:F3}", 100);
+                    Lbl($"RootZ: {m.RootZ.Latest:F3}", 100);
                     GUILayout.FlexibleSpace();
                     EditorGUILayout.EndHorizontal();
                 }
@@ -375,12 +374,11 @@ namespace Genesis.Sentience.Learning.EditorTools
 
             if (isV2)
             {
-                var v2 = (ContinuousLearningSkillV2)_skill;
-                float p = v2.Progress;
-                var progCol = Color.Lerp(PhaseColors[0], PhaseColors[2], p);
+                float hf = m.HeightFraction.Latest;
+                var hfCol = Color.Lerp(PhaseColors[0], PhaseColors[2], hf);
                 var oldCol = GUI.contentColor;
-                GUI.contentColor = progCol;
-                EditorGUILayout.LabelField($"V2 p={p:F2}", EditorStyles.boldLabel, GUILayout.Width(80));
+                GUI.contentColor = hfCol;
+                EditorGUILayout.LabelField($"V2 h={hf:F2}", EditorStyles.boldLabel, GUILayout.Width(80));
                 GUI.contentColor = oldCol;
             }
             else if (isContinuous)

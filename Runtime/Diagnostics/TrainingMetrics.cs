@@ -116,7 +116,7 @@ namespace Genesis.Sentience.Learning
         public readonly MetricRingBuffer WorldModelLoss;
 
         // --- V2 metrics ---
-        public readonly MetricRingBuffer Progress;
+        public readonly MetricRingBuffer HeightFraction;
         public readonly MetricRingBuffer ContactReward;
 
         // --- Dynamic / skill-specific metrics ---
@@ -165,7 +165,7 @@ namespace Genesis.Sentience.Learning
 
             WorldModelLoss = new MetricRingBuffer(capacity);
 
-            Progress = new MetricRingBuffer(capacity);
+            HeightFraction = new MetricRingBuffer(capacity);
             ContactReward = new MetricRingBuffer(capacity);
         }
 
@@ -236,7 +236,7 @@ namespace Genesis.Sentience.Learning
             RootZ.Push(reward.RootZ);
 
             ContactReward.Push(reward.Contact);
-            Progress.Push(reward.Progress);
+            HeightFraction.Push(reward.HeightFraction);
 
             Alpha.Push(alpha);
             QLoss.Push(qLoss);
