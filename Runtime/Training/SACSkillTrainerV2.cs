@@ -183,11 +183,14 @@ namespace Genesis.Sentience.Learning
             var device = firstParam.device;
             var obs = torch.tensor(batch.Obs).reshape(batch.Size, batch.ObsDim).to(device);
 
+            // Use normalized rootZ as the auxiliary target instead of the clipped
+            // standBlend (which is 0 when fallen and provides no gradient).
+            // rootZ / standingZ gives a continuous [0,1] signal proportional to
+            // height — the encoder always has gradient to learn from.
             var rootZ = obs.select(1, 0);
-            const float FALLEN_Z = 0.25f;
             const float STANDING_Z = 0.7f;
-            var standBlend = ((rootZ - FALLEN_Z) / (STANDING_Z - FALLEN_Z)).clamp(0f, 1f);
-            var targets = standBlend.unsqueeze(1);
+            var heightFrac = (rootZ / STANDING_Z).clamp(0f, 1f);
+            var targets = heightFrac.unsqueeze(1);
 
             _lastEncoderAuxLoss = _encoder.TrainAuxiliary(obs, targets);
         }
