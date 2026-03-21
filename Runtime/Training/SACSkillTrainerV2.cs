@@ -176,7 +176,9 @@ namespace Genesis.Sentience.Learning
         {
             using var scope = NewDisposeScope();
 
-            var device = _agent.Actor.parameters().GetEnumerator().Current.device;
+            var enumerator = _agent.Actor.parameters().GetEnumerator();
+            if (!enumerator.MoveNext() || enumerator.Current == null) return;
+            var device = enumerator.Current.device;
             var obs = torch.tensor(batch.Obs).reshape(batch.Size, batch.ObsDim).to(device);
 
             var rootZ = obs.select(1, 0);
