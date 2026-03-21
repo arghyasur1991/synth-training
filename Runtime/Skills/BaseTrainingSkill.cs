@@ -165,7 +165,7 @@ namespace Genesis.Sentience.Learning
 
         /// <summary>
         /// Transform normalized observations before passing to the actor/buffer.
-        /// V2 overrides this to apply the StateEncoder + ObservationAttention.
+        /// V2 overrides this to extract the learned progress signal from the actor's encoder.
         /// Default: identity (returns input unchanged).
         /// </summary>
         protected virtual float[] TransformObservation(float[] normalizedObs) => normalizedObs;

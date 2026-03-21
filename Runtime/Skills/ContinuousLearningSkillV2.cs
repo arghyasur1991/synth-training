@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using UnityEngine;
-using TorchSharp;
 using Mujoco;
 using Genesis.Sentience.Synth;
 using Random = System.Random;
@@ -12,23 +11,24 @@ using Debug = UnityEngine.Debug;
 namespace Genesis.Sentience.Learning
 {
     /// <summary>
-    /// V2 continuous learning skill: replaces hand-crafted heuristics with
-    /// learned components while sharing SAC + persistence infrastructure
-    /// from BaseTrainingSkill.
+    /// V2 continuous learning skill with encoder-in-actor architecture.
     ///
-    /// Compared to ContinuousLearningSkill (V1):
-    ///   - StateEncoder replaces AgentPhase (learned progress signal)
-    ///   - ContinuingRewardV2 with 5 terms, no discrete phases
-    ///   - ObservationAttention focuses on relevant proprioceptive channels
-    ///   - SmoothActuatorCurriculum replaces binary ActionCurriculum
-    ///   - StructuredWorldModel replaces raw-obs WorldModel
-    ///   - No assisted pose teleports (dreams replace them)
+    /// The SAC actor network contains an encoder bottleneck that compresses
+    /// observations to a latent z, from which a progress signal branches off.
+    /// RL gradients train the encoder end-to-end — no separate encoder,
+    /// no auxiliary loss, no attention module.
+    ///
+    /// Compared to V1 (ContinuousLearningSkill):
+    ///   - 5-term reward (height, orientation, contact, energy, imitation)
+    ///   - No discrete AgentPhase — continuous progress from actor's encoder
+    ///   - No ActionCurriculum — all joints active from step 1
     ///   - PBT-configurable reward weights
+    ///   - Same V1 SACSkillTrainer + WorldModel for dreaming
     /// </summary>
     public class ContinuousLearningSkillV2 : BaseTrainingSkill
     {
         [Header("SAC")]
-        [Tooltip("SAC hyperparameters")]
+        [Tooltip("SAC hyperparameters. Set LatentDim > 0 to enable encoder-in-actor.")]
         public SACConfig sacConfig = new SACConfig();
 
         [Header("Reward Weights (PBT-configurable)")]
@@ -55,17 +55,6 @@ namespace Genesis.Sentience.Learning
         [Tooltip("Training batch size on Quest")]
         public int questBatchSize = 128;
 
-        [Header("Smooth Actuator Curriculum")]
-        [Tooltip("Enable smooth per-joint gain curriculum")]
-        public bool enableCurriculum = true;
-
-        [Tooltip("Minimum joint gain — must be high enough to overcome gravity")]
-        [Range(0.1f, 0.8f)]
-        public float gainMin = 0.3f;
-
-        [Tooltip("Base ramp rate per competency improvement")]
-        public float gainRampRate = 1e-5f;
-
         // ── ISynthSkill ─────────────────────────────────────────────────
 
         public override string Name => "ContinuousLearningV2";
@@ -73,7 +62,6 @@ namespace Genesis.Sentience.Learning
         // ── Internal state ──────────────────────────────────────────────
 
         private ContinuingRewardV2 _reward;
-        private SmoothActuatorCurriculum _curriculum;
         private float _bodyWeight;
         private float _lastProgress;
 
@@ -84,31 +72,22 @@ namespace Genesis.Sentience.Learning
         public float CenteredReward => _reward?.LastCenteredReward ?? 0f;
         public float RewardBar => _reward?.RewardBar ?? 0f;
         public float NearestFrameDistance => _reward?.LastNearestFrameDistance ?? 0f;
-        public float Alpha => V2Trainer?.Agent?.Alpha ?? 0f;
-        public float LastQLoss => V2Trainer?.Agent?.LastQLoss ?? 0f;
-        public float LastActorLoss => V2Trainer?.Agent?.LastActorLoss ?? 0f;
-        public int TrainSteps => V2Trainer?.Agent?.TrainSteps ?? 0;
+        public float Alpha => SACTrainer?.Agent?.Alpha ?? 0f;
+        public float LastQLoss => SACTrainer?.Agent?.LastQLoss ?? 0f;
+        public float LastActorLoss => SACTrainer?.Agent?.LastActorLoss ?? 0f;
+        public int TrainSteps => SACTrainer?.Agent?.TrainSteps ?? 0;
         public float TrainingSPS => _trainer?.StepsPerSecond ?? 0;
         public int ReplayBufferCount => _trainer?.ExperienceCount ?? 0;
-        public float WorldModelLoss => V2Trainer?.LastWorldModelLoss ?? 0f;
-        public float EncoderAuxLoss => V2Trainer?.LastEncoderAuxLoss ?? 0f;
-        public int DreamPhaseCount => V2Trainer?.DreamPhaseCount ?? 0;
-        public float AverageGain => _curriculum?.AverageGain ?? 1f;
-        public float LocomotionGain => _curriculum?.LocomotionGain ?? 1f;
-        public float FineMotorGain => _curriculum?.FineMotorGain ?? 1f;
+        public float WorldModelLoss => SACTrainer?.LastWorldModelLoss ?? 0f;
+        public int DreamPhaseCount => SACTrainer?.DreamPhaseCount ?? 0;
 
-        private SACSkillTrainerV2 V2Trainer => _trainer as SACSkillTrainerV2;
+        private SACSkillTrainer SACTrainer => _trainer as SACSkillTrainer;
 
         // ── BaseTrainingSkill hooks ─────────────────────────────────────
 
         protected override ISkillTrainer CreateTrainer()
         {
-            int contactDim = _filter.contactObsDim;
-            int strainDim = _filter.strainObsDim;
-            int smoothDim = _filter.physicsObsDim - contactDim - strainDim;
-
-            return new SACSkillTrainerV2(sacConfig, learningStarts,
-                smoothDim, contactDim, strainDim, _isMobile);
+            return new SACSkillTrainer(sacConfig, learningStarts, _isMobile);
         }
 
         protected override (int obsDim, int actDim) GetDimensions()
@@ -131,8 +110,6 @@ namespace Genesis.Sentience.Learning
             _reward = new ContinuingRewardV2(standingZ, _filter.includedQposIdx);
             _reward.SetNearestFrameInterval(nearestFrameInterval);
 
-            // Always compute body weight from the MuJoCo model — needed for
-            // contact reward normalization even if _contact is discovered later.
             var mjModel = MjScene.Instance.Model;
             int nb = (int)mjModel->nbody;
             double totalMass = 0;
@@ -154,22 +131,8 @@ namespace Genesis.Sentience.Learning
             if (referenceClips != null && referenceClips.Length > 0)
                 IndexReferenceClips();
 
-            if (enableCurriculum)
-            {
-                _curriculum = new SmoothActuatorCurriculum();
-                _curriculum.Initialize(MjScene.Instance.Model, _filter, _entity?.BoneMapper,
-                    gainMin, 1.0f, gainRampRate);
-            }
-
-            // Target entropy must match the FULL action dim because SAC computes
-            // log_prob over all dimensions regardless of curriculum gains.
-            // Using actDim * gain would create an irreducible mismatch where
-            // the alpha optimizer can never satisfy the target.
-            V2Trainer?.SetTargetEntropy(_filter.actDim, sacConfig.TargetEntropyScale);
-            Debug.Log($"ContinuousLearningV2: Target entropy set for " +
-                $"actDim={_filter.actDim}, scale={sacConfig.TargetEntropyScale}");
-
             Debug.Log($"ContinuousLearningV2: Initialized — " +
+                $"latentDim={sacConfig.LatentDim}, encoderHidden={sacConfig.EncoderHidden}, " +
                 $"reward weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
                 $"C={rewardWeights.Contact:F2} E={rewardWeights.Energy:F2} I={rewardWeights.Imitation:F2}");
         }
@@ -185,14 +148,9 @@ namespace Genesis.Sentience.Learning
 
         protected override float[] TransformObservation(float[] normalizedObs)
         {
-            if (V2Trainer?.Encoder == null) return normalizedObs;
-
-            using var scope = TorchSharp.torch.NewDisposeScope();
-            var obsTensor = TorchSharp.torch.tensor(normalizedObs, dtype: TorchSharp.torch.ScalarType.Float32)
-                .unsqueeze(0);
-            var (z, progress) = V2Trainer.Encoder.Infer(obsTensor);
-            _lastProgress = progress;
-
+            var agent = SACTrainer?.Agent;
+            if (agent != null && agent.HasEncoder)
+                _lastProgress = agent.InferProgress(normalizedObs);
             return normalizedObs;
         }
 
@@ -206,7 +164,7 @@ namespace Genesis.Sentience.Learning
         {
             if (_metrics != null)
             {
-                var agent = V2Trainer?.Agent;
+                var agent = SACTrainer?.Agent;
                 _metrics.Sample(
                     in _reward.LastSnapshot,
                     agent?.Alpha ?? 0f,
@@ -215,19 +173,8 @@ namespace Genesis.Sentience.Learning
                     agent?.LastAlphaLoss ?? 0f,
                     _trainer?.StepsPerSecond ?? 0f,
                     _trainer?.ExperienceCount ?? 0,
-                    V2Trainer?.LastWorldModelLoss ?? 0f,
-                    V2Trainer?.LastEncoderAuxLoss ?? 0f,
-                    _curriculum?.AverageGain ?? 1f,
-                    _curriculum?.LocomotionGain ?? 1f,
-                    _curriculum?.FineMotorGain ?? 1f);
+                    SACTrainer?.LastWorldModelLoss ?? 0f);
             }
-
-            _curriculum?.Step(_reward.LastCenteredReward);
-        }
-
-        protected override void PostProcessAction(float[] rawAction)
-        {
-            _curriculum?.ApplyGains(rawAction);
         }
 
         protected override void SaveExtraState(string directory)
@@ -237,12 +184,6 @@ namespace Genesis.Sentience.Learning
                 BaseTrainingSkill.WriteBinaryTmpStatic(
                     Path.Combine(directory, "reward_v2_state.bin"),
                     bw => _reward.Save(bw));
-            }
-            if (_curriculum != null)
-            {
-                BaseTrainingSkill.WriteBinaryTmpStatic(
-                    Path.Combine(directory, "smooth_curriculum_state.bin"),
-                    bw => _curriculum.Save(bw));
             }
         }
 
@@ -254,29 +195,12 @@ namespace Genesis.Sentience.Learning
                 using var br = new BinaryReader(File.OpenRead(rewardPath));
                 _reward.Load(br);
             }
-
-            string currPath = Path.Combine(directory, "smooth_curriculum_state.bin");
-            if (_curriculum != null && File.Exists(currPath))
-            {
-                try
-                {
-                    using var br = new BinaryReader(File.OpenRead(currPath));
-                    _curriculum.Load(br);
-                    Debug.Log($"ContinuousLearningV2: Loaded curriculum — " +
-                        $"avgGain={_curriculum.AverageGain:F3}");
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning($"ContinuousLearningV2: Curriculum load failed " +
-                        $"({e.Message}), starting fresh");
-                }
-            }
         }
 
         public override Dictionary<string, float> GetDiagnostics()
         {
             var d = new Dictionary<string, float>();
-            var agent = V2Trainer?.Agent;
+            var agent = SACTrainer?.Agent;
             if (agent != null)
             {
                 d["alpha"] = agent.Alpha;
@@ -290,17 +214,10 @@ namespace Genesis.Sentience.Learning
                 d["rewardBar"] = _reward.RewardBar;
                 d["progress"] = _lastProgress;
             }
-            if (_curriculum != null)
+            if (SACTrainer != null)
             {
-                d["avgGain"] = _curriculum.AverageGain;
-                d["locoGain"] = _curriculum.LocomotionGain;
-                d["fineGain"] = _curriculum.FineMotorGain;
-            }
-            if (V2Trainer != null)
-            {
-                d["wmLoss"] = V2Trainer.LastWorldModelLoss;
-                d["encAuxLoss"] = V2Trainer.LastEncoderAuxLoss;
-                d["dreamCount"] = V2Trainer.DreamPhaseCount;
+                d["wmLoss"] = SACTrainer.LastWorldModelLoss;
+                d["dreamCount"] = SACTrainer.DreamPhaseCount;
             }
             return d;
         }

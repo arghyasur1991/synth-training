@@ -16,19 +16,42 @@ namespace Genesis.Sentience.Learning
         private const float LOG_STD_MIN = -5f;
         private const float LOG_STD_MAX = 2f;
 
-        private readonly Linear fc1, fc2, fcMean, fcLogStd;
+        // V1 flat-MLP layers (used when _latentDim == 0)
+        private readonly Linear fc1, fc2;
+
+        // Encoder-in-actor layers (used when _latentDim > 0)
+        private readonly Linear encFc1, encFc2, progressHead, policyFc1, policyFc2;
+
+        private readonly Linear fcMean, fcLogStd;
         private readonly float _actionScale;
         private readonly float _actionBias;
+        private readonly int _latentDim;
+
+        public int LatentDim => _latentDim;
+        public float LastProgress { get; private set; }
 
         public SACActorNetwork(int obsDim, int actDim, int hidden1 = 256, int hidden2 = 256,
-            float actionScale = 1f, float actionBias = 0f)
+            float actionScale = 1f, float actionBias = 0f, int latentDim = 0, int encoderHidden = 128)
             : base("SACActorNetwork")
         {
             _actionScale = actionScale;
             _actionBias = actionBias;
+            _latentDim = latentDim;
 
-            fc1 = Linear(obsDim, hidden1);
-            fc2 = Linear(hidden1, hidden2);
+            if (latentDim > 0)
+            {
+                encFc1 = Linear(obsDim, encoderHidden);
+                encFc2 = Linear(encoderHidden, latentDim);
+                progressHead = Linear(latentDim, 1);
+                policyFc1 = Linear(latentDim, hidden1);
+                policyFc2 = Linear(hidden1, hidden2);
+            }
+            else
+            {
+                fc1 = Linear(obsDim, hidden1);
+                fc2 = Linear(hidden1, hidden2);
+            }
+
             fcMean = Linear(hidden2, actDim);
             fcLogStd = Linear(hidden2, actDim);
 
@@ -37,8 +60,20 @@ namespace Genesis.Sentience.Learning
 
         public override (Tensor action, Tensor logProb, Tensor mean) forward(Tensor obs)
         {
-            var x = functional.relu(fc1.forward(obs));
-            x = functional.relu(fc2.forward(x));
+            Tensor x;
+            if (_latentDim > 0)
+            {
+                var h = functional.relu(encFc1.forward(obs));
+                var z = encFc2.forward(h);
+                LastProgress = torch.sigmoid(progressHead.forward(z)).mean().item<float>();
+                x = functional.relu(policyFc1.forward(z));
+                x = functional.relu(policyFc2.forward(x));
+            }
+            else
+            {
+                x = functional.relu(fc1.forward(obs));
+                x = functional.relu(fc2.forward(x));
+            }
 
             var mean = fcMean.forward(x);
             var logStd = fcLogStd.forward(x).clamp(LOG_STD_MIN, LOG_STD_MAX);
@@ -57,6 +92,20 @@ namespace Genesis.Sentience.Learning
             var meanAction = torch.tanh(mean) * _actionScale + _actionBias;
 
             return (action, logProb, meanAction);
+        }
+
+        /// <summary>
+        /// Run only the encoder layers to get progress. Much cheaper than full forward.
+        /// Returns 0 when no encoder is configured (latentDim == 0).
+        /// </summary>
+        public float InferProgressOnly(Tensor obs)
+        {
+            if (_latentDim <= 0) return 0f;
+            var h = functional.relu(encFc1.forward(obs));
+            var z = encFc2.forward(h);
+            float p = torch.sigmoid(progressHead.forward(z)).mean().item<float>();
+            LastProgress = p;
+            return p;
         }
     }
 
@@ -134,12 +183,16 @@ namespace Genesis.Sentience.Learning
         private float _lastActorLoss;
         private float _lastAlphaLoss;
 
+        private float _lastProgress;
+
         public float Alpha => (float)Math.Exp(_logAlpha.item<float>());
         public float LastQLoss => _lastQLoss;
         public float LastActorLoss => _lastActorLoss;
         public float LastAlphaLoss => _lastAlphaLoss;
         public int TrainSteps => _trainStep;
         public float TargetEntropy => _targetEntropy;
+        public float LastProgress => _lastProgress;
+        public bool HasEncoder => Actor.LatentDim > 0;
 
         public void SetTargetEntropy(int activeDims, float entropyScale)
         {
@@ -188,7 +241,8 @@ namespace Genesis.Sentience.Learning
             _policyLr = config.PolicyLr;
 
             Actor = new SACActorNetwork(obsDim, actDim, config.Hidden1, config.Hidden2,
-                actionScale: config.ActionScale);
+                actionScale: config.ActionScale, latentDim: config.LatentDim,
+                encoderHidden: config.EncoderHidden);
             QF1 = new SoftQNetwork(obsDim, actDim, config.Hidden1, config.Hidden2);
             QF2 = new SoftQNetwork(obsDim, actDim, config.Hidden1, config.Hidden2);
             QF1Target = new SoftQNetwork(obsDim, actDim, config.Hidden1, config.Hidden2);
@@ -211,9 +265,11 @@ namespace Genesis.Sentience.Learning
             _alphaOptimizer = optim.Adam(new[] { _logAlpha }, lr: config.PolicyLr);
 
             _inferenceActorA = new SACActorNetwork(obsDim, actDim, config.Hidden1, config.Hidden2,
-                actionScale: config.ActionScale);
+                actionScale: config.ActionScale, latentDim: config.LatentDim,
+                encoderHidden: config.EncoderHidden);
             _inferenceActorB = new SACActorNetwork(obsDim, actDim, config.Hidden1, config.Hidden2,
-                actionScale: config.ActionScale);
+                actionScale: config.ActionScale, latentDim: config.LatentDim,
+                encoderHidden: config.EncoderHidden);
             _inferenceActorA.to(torch.CPU);
             _inferenceActorB.to(torch.CPU);
             _activeInferenceActor = _inferenceActorA;
@@ -248,6 +304,7 @@ namespace Genesis.Sentience.Learning
                 _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
                 var actor = Volatile.Read(ref _activeInferenceActor);
                 var (action, _, _) = actor.forward(_infObsTensor);
+                _lastProgress = actor.LastProgress;
                 CopyTensorToBuffer(action, _actionBuffer);
             }
 
@@ -263,10 +320,31 @@ namespace Genesis.Sentience.Learning
                 _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
                 var actor = Volatile.Read(ref _activeInferenceActor);
                 var (_, _, meanAction) = actor.forward(_infObsTensor);
+                _lastProgress = actor.LastProgress;
                 CopyTensorToBuffer(meanAction, _actionBuffer);
             }
 
             return _actionBuffer;
+        }
+
+        /// <summary>
+        /// Run only the encoder part of the actor to get progress.
+        /// Cheaper than full forward — skips policy layers and sampling.
+        /// Returns 0 when no encoder is configured (LatentDim == 0).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float InferProgress(float[] obs)
+        {
+            if (!HasEncoder) return 0f;
+            using var scope = NewDisposeScope();
+            using (no_grad())
+            {
+                _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
+                var actor = Volatile.Read(ref _activeInferenceActor);
+                float p = actor.InferProgressOnly(_infObsTensor);
+                _lastProgress = p;
+                return p;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -668,6 +746,16 @@ namespace Genesis.Sentience.Learning
 
         [UnityEngine.Tooltip("Training steps over which PER beta anneals from PERBetaStart to 1.0.")]
         public int PERBetaAnnealSteps = 100_000;
+
+        [UnityEngine.Header("Encoder-in-Actor")]
+
+        [UnityEngine.Tooltip("Latent dimension for encoder bottleneck inside the actor. " +
+            "0 = flat MLP (V1 mode). When > 0, the actor compresses obs through an " +
+            "encoder before the policy head, and outputs a learned progress signal.")]
+        public int LatentDim = 0;
+
+        [UnityEngine.Tooltip("Encoder hidden layer size (only used when LatentDim > 0).")]
+        public int EncoderHidden = 128;
 
         [UnityEngine.Header("Dyna-Style Dreaming")]
 

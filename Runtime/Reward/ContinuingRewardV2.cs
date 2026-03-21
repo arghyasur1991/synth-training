@@ -41,13 +41,12 @@ namespace Genesis.Sentience.Learning
 
     /// <summary>
     /// V2 continuing reward: 5 terms, no discrete phases, continuous modulation
-    /// via a learned progress signal from the StateEncoder.
+    /// via a learned progress signal from the actor's encoder bottleneck.
     ///
     /// Compared to V1 (ContinuingReward):
     ///   - 5 terms instead of 12 (height, orientation, contact, energy, imitation)
     ///   - No AgentPhase enum, no discrete phase bonuses
-    ///   - No proximity reward (encoder handles spatial awareness)
-    ///   - Weight modulation via continuous progress ∈ [0,1] from encoder
+    ///   - Weight modulation via continuous progress ∈ [0,1] from actor encoder
     ///   - All base weights are PBT-configurable via RewardWeightsV2
     ///
     /// Keeps: reward centering, reference frame indexing, amortized nearest-frame search.
@@ -106,7 +105,7 @@ namespace Genesis.Sentience.Learning
 
         /// <summary>
         /// Compute the V2 continuing reward.
-        /// progress: learned continuous signal from StateEncoder, ∈ [0,1].
+        /// progress: learned continuous signal from actor's encoder bottleneck, ∈ [0,1].
         /// weights: PBT-configurable base weights.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

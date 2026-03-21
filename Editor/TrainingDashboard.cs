@@ -35,8 +35,7 @@ namespace Genesis.Sentience.Learning.EditorTools
         private bool _foldWorldModel = true;
         private bool _foldDynamic = true;
         private bool _foldV2Reward = true;
-        private bool _foldV2Encoder = true;
-        private bool _foldV2Curriculum = true;
+        private bool _foldV2Progress = true;
 
         static readonly Color C_RAW = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_CENTERED = new Color(0.40f, 0.70f, 1.00f);
@@ -69,10 +68,6 @@ namespace Genesis.Sentience.Learning.EditorTools
         static readonly Color C_WMLOSS = new Color(0.00f, 0.74f, 0.83f);
         static readonly Color C_PROGRESS = new Color(0.40f, 0.90f, 0.40f);
         static readonly Color C_CONTACT_R = new Color(0.01f, 0.66f, 0.96f);
-        static readonly Color C_ENCAUX = new Color(0.91f, 0.12f, 0.39f);
-        static readonly Color C_AVGGAIN = new Color(0.30f, 0.90f, 0.35f);
-        static readonly Color C_LOCOGAIN = new Color(0.40f, 0.70f, 1.00f);
-        static readonly Color C_FINEGAIN = new Color(1.00f, 0.60f, 0.00f);
 
         static readonly Color C_SPS = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_BUF = new Color(0.40f, 0.70f, 1.00f);
@@ -262,43 +257,33 @@ namespace Genesis.Sentience.Learning.EditorTools
                         (m.Imitation, C_IMIT, "Imitation"));
                 }
 
-                if (_foldV2Encoder = EditorGUILayout.Foldout(_foldV2Encoder, "Encoder & Progress", true, EditorStyles.foldoutHeader))
+                if (_foldV2Progress = EditorGUILayout.Foldout(_foldV2Progress, "Progress & State", true, EditorStyles.foldoutHeader))
                 {
                     DrawGraph(120, window,
                         (m.Progress, C_PROGRESS, "Progress"),
                         (m.RootZ, C_ROOTZ, "RootZ"));
-                    DrawGraph(100, window,
-                        (m.EncoderAuxLoss, C_ENCAUX, "Enc Aux Loss"));
 
                     var v2Skill = (ContinuousLearningSkillV2)_skill;
                     EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
                     Lbl($"Progress: {v2Skill.Progress:F3}", 100);
-                    Lbl($"Enc Loss: {v2Skill.EncoderAuxLoss:F4}", 120);
+                    Lbl($"LatentDim: {v2Skill.sacConfig.LatentDim}", 100);
                     GUILayout.FlexibleSpace();
                     EditorGUILayout.EndHorizontal();
                 }
 
-                if (_foldV2Curriculum = EditorGUILayout.Foldout(_foldV2Curriculum, "Smooth Actuator Curriculum", true, EditorStyles.foldoutHeader))
-                {
-                    DrawGraph(120, window,
-                        (m.AvgGain, C_AVGGAIN, "Avg Gain"),
-                        (m.LocoGain, C_LOCOGAIN, "Loco Gain"),
-                        (m.FineGain, C_FINEGAIN, "Fine Gain"));
-                }
-
                 if (m.WorldModelLoss.Count > 0)
                 {
-                    if (_foldWorldModel = EditorGUILayout.Foldout(_foldWorldModel, "Structured World Model", true, EditorStyles.foldoutHeader))
+                    if (_foldWorldModel = EditorGUILayout.Foldout(_foldWorldModel, "World Model (Dreaming)", true, EditorStyles.foldoutHeader))
                     {
                         DrawGraph(120, window,
                             (m.WorldModelLoss, C_WMLOSS, "WM Loss"));
 
-                        var v2Trainer = ((ContinuousLearningSkillV2)_skill).Trainer as SACSkillTrainerV2;
-                        if (v2Trainer != null)
+                        var sacTrainer = ((ContinuousLearningSkillV2)_skill).Trainer as SACSkillTrainer;
+                        if (sacTrainer != null)
                         {
                             EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
-                            Lbl($"WM Loss: {v2Trainer.LastWorldModelLoss:F4}", 120);
-                            Lbl($"Dreams: {v2Trainer.DreamPhaseCount}", 80);
+                            Lbl($"WM Loss: {sacTrainer.LastWorldModelLoss:F4}", 120);
+                            Lbl($"Dreams: {sacTrainer.DreamPhaseCount}", 80);
                             GUILayout.FlexibleSpace();
                             EditorGUILayout.EndHorizontal();
                         }
@@ -420,8 +405,6 @@ namespace Genesis.Sentience.Learning.EditorTools
                 Lbl($"\u03B1: {m.Alpha.Latest:F3}", 65);
                 Lbl($"QL: {m.QLoss.Latest:F4}", 80);
             }
-            if (isV2)
-                Lbl($"Gain: {m.AvgGain.Latest:F2}", 70);
             Lbl($"SPS: {m.TrainingSPS.Latest:F0}", 65);
             Lbl($"Buf: {m.ReplayCount.Latest:F0}", 80);
             Lbl($"Dec: {_skill.TotalDecisions:N0}", 100);

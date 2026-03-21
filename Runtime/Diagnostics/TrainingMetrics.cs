@@ -118,10 +118,6 @@ namespace Genesis.Sentience.Learning
         // --- V2 metrics ---
         public readonly MetricRingBuffer Progress;
         public readonly MetricRingBuffer ContactReward;
-        public readonly MetricRingBuffer EncoderAuxLoss;
-        public readonly MetricRingBuffer AvgGain;
-        public readonly MetricRingBuffer LocoGain;
-        public readonly MetricRingBuffer FineGain;
 
         // --- Dynamic / skill-specific metrics ---
         private readonly Dictionary<string, MetricRingBuffer> _dynamic
@@ -171,10 +167,6 @@ namespace Genesis.Sentience.Learning
 
             Progress = new MetricRingBuffer(capacity);
             ContactReward = new MetricRingBuffer(capacity);
-            EncoderAuxLoss = new MetricRingBuffer(capacity);
-            AvgGain = new MetricRingBuffer(capacity);
-            LocoGain = new MetricRingBuffer(capacity);
-            FineGain = new MetricRingBuffer(capacity);
         }
 
         /// <summary>
@@ -231,8 +223,7 @@ namespace Genesis.Sentience.Learning
             in RewardSnapshotV2 reward,
             float alpha, float qLoss, float actorLoss, float alphaLoss,
             float sps, int replayCount,
-            float worldModelLoss, float encoderAuxLoss,
-            float avgGain, float locoGain, float fineGain)
+            float worldModelLoss)
         {
             RawReward.Push(reward.RawReward);
             CenteredReward.Push(reward.CenteredReward);
@@ -256,10 +247,6 @@ namespace Genesis.Sentience.Learning
             ReplayCount.Push(replayCount);
 
             WorldModelLoss.Push(worldModelLoss);
-            EncoderAuxLoss.Push(encoderAuxLoss);
-            AvgGain.Push(avgGain);
-            LocoGain.Push(locoGain);
-            FineGain.Push(fineGain);
 
             TotalSamples++;
         }
