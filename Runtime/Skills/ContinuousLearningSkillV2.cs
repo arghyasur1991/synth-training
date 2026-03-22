@@ -473,18 +473,18 @@ namespace Genesis.Sentience.Learning
             // Positive = extension direction for this model (empirically validated).
             var canonicalProfile = new Dictionary<string, float>(System.StringComparer.OrdinalIgnoreCase)
             {
-                ["Spine"]      =  d,  // back extension (arch)
-                ["Chest"]      =  d,
-                ["UpperChest"] =  d,
-                ["Neck"]       =  d,  // head up / back
-                ["Head"]       =  d,
-                ["Hips"]       =  d,  // pelvis extension
-                ["UpperLeg"]   =  d,  // hip extension
-                ["LowerLeg"]   =  d,  // knee extension
-                ["Shoulder"]   = -d,  // push off ground
-                ["UpperArm"]   = -d,  // push off ground
-                ["LowerArm"]   =  d,  // elbow extension
-                ["Foot"]       =  d,  // ankle extension (plantarflex)
+                ["Spine"]      = -d,  // back extension (arch)
+                ["Chest"]      = -d,
+                ["UpperChest"] = -d,
+                ["Neck"]       = -d,  // head up / back
+                ["Head"]       = -d,
+                ["Hips"]       = -d,  // pelvis extension
+                ["UpperLeg"]   = -d,  // hip extension
+                ["LowerLeg"]   = -d,  // knee extension
+                ["Shoulder"]   =  d,  // push off ground
+                ["UpperArm"]   =  d,  // push off ground
+                ["LowerArm"]   = -d,  // elbow extension
+                ["Foot"]       = -d,  // ankle extension (plantarflex)
             };
 
             // Build reverse lookup: bone name pattern → canonical name from catalog.
