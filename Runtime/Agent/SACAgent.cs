@@ -1056,11 +1056,29 @@ namespace Genesis.Sentience.Learning
             "experience standing states early in training.")]
         public bool DragForceEnabled = false;
 
-        [UnityEngine.Tooltip("Maximum upward force in Newtons (body weight ~400N, 200 = ~0.5x).")]
+        [UnityEngine.Tooltip("Base upward force in Newtons (body weight ~400N, 200 = ~0.5x). " +
+            "Actual magnitude drifts via OU process between DragForceMin and DragForceMax.")]
         public float DragForceNewtons = 200f;
+
+        [UnityEngine.Tooltip("Minimum drag force (Newtons) for OU drift range.")]
+        public float DragForceMin = 50f;
+
+        [UnityEngine.Tooltip("Maximum drag force (Newtons) for OU drift range.")]
+        public float DragForceMax = 400f;
+
+        [UnityEngine.Tooltip("OU mean-reversion rate (higher = faster return to DragForceNewtons).")]
+        public float DragForceOUTheta = 0.01f;
+
+        [UnityEngine.Tooltip("OU noise scale (higher = more variation).")]
+        public float DragForceOUSigma = 30f;
 
         [UnityEngine.Tooltip("Steps over which drag force ramps from 0 to full strength.")]
         public int DragForceWarmupSteps = 5000;
+
+        [UnityEngine.Tooltip("Fraction of root force applied to each upper body part " +
+            "(chest, spine, shoulders). 0 = root+head only.")]
+        [UnityEngine.Range(0f, 1f)]
+        public float DragUpperBodyFraction = 0.2f;
 
         [UnityEngine.Header("Dyna-Style Dreaming")]
 

@@ -75,6 +75,12 @@ namespace Genesis.Sentience.Learning
         private float _standingHeadZ;
         private int _headBodyIdx = -1;
         private long _dragDecisionCount;
+        private float _dragOU; // current OU-drifting drag magnitude
+        private Random _dragRng;
+
+        // Upper body indices for distributed drag (chest, spine, shoulders)
+        private int[] _upperBodyIdx;
+        private float[] _upperBodyStandingZ;
 
         // ── Diagnostics ─────────────────────────────────────────────────
         public float RawReward => _reward?.LastRawReward ?? 0f;
@@ -163,11 +169,16 @@ namespace Genesis.Sentience.Learning
             if (sacConfig.PerJointOUSigmaEnabled)
                 BuildPerJointOUSigma(mjModel);
 
+            if (sacConfig.DragForceEnabled)
+                InitDragForce(mjModel, mjData, nb);
+
             Debug.Log($"ContinuousLearningV2: Initialized — " +
                 $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim})" +
                 $", head={(_headBodyIdx > 0 ? $"body{_headBodyIdx} (standZ={_standingHeadZ:F3})" : "NOT FOUND")}" +
                 (sacConfig.ContextDim > 0 ? $", context={sacConfig.ContextDim}, seqLen={sacConfig.ContextSeqLen}" : "") +
-                (sacConfig.DragForceEnabled ? $", drag={sacConfig.DragForceNewtons}N (warmup={sacConfig.DragForceWarmupSteps})" : "") +
+                (sacConfig.DragForceEnabled ? $", drag=OU({sacConfig.DragForceMin}-{sacConfig.DragForceMax}N, " +
+                    $"mean={sacConfig.DragForceNewtons}N, warmup={sacConfig.DragForceWarmupSteps})" +
+                    $", upperBody={_upperBodyIdx?.Length ?? 0} ({sacConfig.DragUpperBodyFraction:P0})" : "") +
                 (sacConfig.PerJointOUSigmaEnabled ? ", perJointOU=ON" : "") +
                 $", weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
                 $"C={rewardWeights.Contact:F2} E={rewardWeights.Energy:F2} I={rewardWeights.Imitation:F2}");
@@ -288,30 +299,80 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
-        /// Apply upward force to root body and head via xfrc_applied.
-        /// Force scales inversely with height (strongest when fallen) and ramps up
-        /// over warmup steps. Forces are in world frame — +Z is always up regardless
-        /// of body orientation, so this works for both prone and supine poses.
+        /// Discover upper-body MuJoCo body indices and initialize OU drag state.
+        /// </summary>
+        private unsafe void InitDragForce(MujocoLib.mjModel_* model, MujocoLib.mjData_* data, int nbody)
+        {
+            _dragOU = sacConfig.DragForceNewtons;
+            _dragRng = new Random(42);
+
+            var upperKeywords = new[] { "chest", "spine", "abdomen",
+                "lshoulder", "rshoulder", "lcollar", "rcollar" };
+            var idxList = new List<int>();
+            var zList = new List<float>();
+
+            foreach (var kw in upperKeywords)
+            {
+                int idx = FindBodyByName(model, nbody, kw);
+                if (idx > 0)
+                {
+                    idxList.Add(idx);
+                    zList.Add((float)data->xpos[idx * 3 + 2]);
+                }
+            }
+
+            _upperBodyIdx = idxList.ToArray();
+            _upperBodyStandingZ = zList.ToArray();
+
+            Debug.Log($"ContinuousLearningV2: Drag upper body — " +
+                $"found {_upperBodyIdx.Length} bodies: [{string.Join(", ", _upperBodyIdx)}]");
+        }
+
+        /// <summary>
+        /// Apply upward drag force to root, head, and upper body via xfrc_applied.
+        /// Magnitude drifts via OU process for data diversity. Force scales inversely
+        /// with height (strongest when fallen) and ramps up over warmup steps.
+        /// All forces are world-frame: +Z = up regardless of body orientation.
         /// </summary>
         private unsafe void ApplyDragForce(MujocoLib.mjData_* data)
         {
             _dragDecisionCount++;
 
+            // OU process: drift magnitude for data diversity
+            float dt = 1f; // one step
+            float theta = sacConfig.DragForceOUTheta;
+            float sigma = sacConfig.DragForceOUSigma;
+            float noise = (float)(_dragRng.NextDouble() * 2.0 - 1.0) * 1.7320508f; // uniform approx
+            _dragOU += theta * (sacConfig.DragForceNewtons - _dragOU) * dt + sigma * noise * Mathf.Sqrt(dt);
+            _dragOU = Mathf.Clamp(_dragOU, sacConfig.DragForceMin, sacConfig.DragForceMax);
+
             float warmup = Mathf.Clamp01((float)_dragDecisionCount / sacConfig.DragForceWarmupSteps);
+            float baseMag = _dragOU * warmup;
+
+            // Root body (index 1)
             float rootZ = (float)data->qpos[2];
             float heightGate = Mathf.Max(0f, 1f - rootZ / _standingZ);
-            float rootForce = sacConfig.DragForceNewtons * heightGate * warmup;
+            data->xfrc_applied[1 * 6 + 2] = baseMag * heightGate;
 
-            // xfrc_applied is (nbody, 6): [fx, fy, fz, tx, ty, tz] per body.
-            // Forces are world-frame: +Z = up regardless of body orientation.
-            data->xfrc_applied[1 * 6 + 2] = rootForce;
-
+            // Head
             if (_headBodyIdx > 0)
             {
                 float headZ = (float)data->xpos[_headBodyIdx * 3 + 2];
                 float headGate = Mathf.Max(0f, 1f - headZ / _standingHeadZ);
-                float headForce = sacConfig.DragForceNewtons * 0.3f * headGate * warmup;
-                data->xfrc_applied[_headBodyIdx * 6 + 2] = headForce;
+                data->xfrc_applied[_headBodyIdx * 6 + 2] = baseMag * 0.3f * headGate;
+            }
+
+            // Upper body chain (chest, spine, shoulders)
+            float ubFrac = sacConfig.DragUpperBodyFraction;
+            if (ubFrac > 0f && _upperBodyIdx != null)
+            {
+                for (int i = 0; i < _upperBodyIdx.Length; i++)
+                {
+                    int bIdx = _upperBodyIdx[i];
+                    float bZ = (float)data->xpos[bIdx * 3 + 2];
+                    float bGate = Mathf.Max(0f, 1f - bZ / _upperBodyStandingZ[i]);
+                    data->xfrc_applied[bIdx * 6 + 2] = baseMag * ubFrac * bGate;
+                }
             }
         }
 
