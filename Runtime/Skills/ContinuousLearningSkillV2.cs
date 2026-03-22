@@ -498,9 +498,13 @@ namespace Genesis.Sentience.Learning
 
             Debug.Log($"ContinuousLearningV2: ProneRecovery profile — " +
                 $"{matchedLines.Count} MATCHED:\n{string.Join("\n", matchedLines)}");
-            if (unmatchedLines.Count > 0 && unmatchedLines.Count <= 30)
+
+            // Always log a sample of unmatched so we can see actual naming convention
+            int showUnmatched = Mathf.Min(unmatchedLines.Count, 50);
+            if (showUnmatched > 0)
                 Debug.Log($"ContinuousLearningV2: ProneRecovery — " +
-                    $"{unmatchedLines.Count} unmatched:\n{string.Join("\n", unmatchedLines)}");
+                    $"{unmatchedLines.Count} unmatched (showing first {showUnmatched}):\n" +
+                    $"{string.Join("\n", unmatchedLines.GetRange(0, showUnmatched))}");
         }
 
         /// <summary>
