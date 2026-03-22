@@ -1079,6 +1079,26 @@ namespace Genesis.Sentience.Learning
         [UnityEngine.Range(0f, 1f)]
         public float DragUpperBodyFraction = 0.5f;
 
+        [UnityEngine.Header("Action Guide (Standing-Pose Injection)")]
+
+        [UnityEngine.Tooltip("Enable probabilistic injection of a standing-pose action. " +
+            "Creates Q-gradient in action space by showing the critic that 'standing-pose' " +
+            "actions produce higher reward than random actions.")]
+        public bool ActionGuideEnabled = false;
+
+        [UnityEngine.Tooltip("Initial probability of replacing the agent's action with the " +
+            "standing-pose guide action each decision step.")]
+        [UnityEngine.Range(0f, 1f)]
+        public float ActionGuideProb = 0.3f;
+
+        [UnityEngine.Tooltip("Floor probability after taper completes. 0 = fully autonomous.")]
+        [UnityEngine.Range(0f, 0.5f)]
+        public float ActionGuideProbFloor = 0f;
+
+        [UnityEngine.Tooltip("Decision steps over which guide probability tapers from " +
+            "ActionGuideProb to ActionGuideProbFloor.")]
+        public int ActionGuideTaperSteps = 100000;
+
         [UnityEngine.Header("Dyna-Style Dreaming")]
 
         [UnityEngine.Tooltip("Enable world-model dreaming: train a forward model on real transitions, " +

@@ -121,6 +121,7 @@ namespace Genesis.Sentience.Learning
         public readonly MetricRingBuffer DiscoveryGate;
         public readonly MetricRingBuffer AvgHeightFraction;
         public readonly MetricRingBuffer DragForce;
+        public readonly MetricRingBuffer GuideActive;
 
         // --- Dynamic / skill-specific metrics ---
         private readonly Dictionary<string, MetricRingBuffer> _dynamic
@@ -173,6 +174,7 @@ namespace Genesis.Sentience.Learning
             DiscoveryGate = new MetricRingBuffer(capacity);
             AvgHeightFraction = new MetricRingBuffer(capacity);
             DragForce = new MetricRingBuffer(capacity);
+            GuideActive = new MetricRingBuffer(capacity);
         }
 
         /// <summary>
@@ -229,7 +231,8 @@ namespace Genesis.Sentience.Learning
             in RewardSnapshotV2 reward,
             float alpha, float qLoss, float actorLoss, float alphaLoss,
             float sps, int replayCount,
-            float worldModelLoss, float dragForce = 0f)
+            float worldModelLoss, float dragForce = 0f,
+            float guideActive = 0f)
         {
             RawReward.Push(reward.RawReward);
             CenteredReward.Push(reward.CenteredReward);
@@ -246,6 +249,7 @@ namespace Genesis.Sentience.Learning
             DiscoveryGate.Push(reward.DiscoveryGate);
             AvgHeightFraction.Push(reward.AvgHeightFraction);
             DragForce.Push(dragForce);
+            GuideActive.Push(guideActive);
 
             Alpha.Push(alpha);
             QLoss.Push(qLoss);

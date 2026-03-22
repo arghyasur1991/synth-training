@@ -37,6 +37,7 @@ namespace Genesis.Sentience.Learning.EditorTools
         private bool _foldV2Reward = true;
         private bool _foldV2Progress = true;
         private bool _foldDragForce = true;
+        private bool _foldActionGuide = true;
 
         static readonly Color C_RAW = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_CENTERED = new Color(0.40f, 0.70f, 1.00f);
@@ -70,6 +71,7 @@ namespace Genesis.Sentience.Learning.EditorTools
         static readonly Color C_PROGRESS = new Color(0.40f, 0.90f, 0.40f);
         static readonly Color C_CONTACT_R = new Color(0.01f, 0.66f, 0.96f);
         static readonly Color C_DRAG = new Color(1.00f, 0.47f, 0.00f);
+        static readonly Color C_GUIDE = new Color(0.40f, 0.85f, 0.95f);
 
         static readonly Color C_SPS = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_BUF = new Color(0.40f, 0.70f, 1.00f);
@@ -281,6 +283,8 @@ namespace Genesis.Sentience.Learning.EditorTools
                     }
                     if (v2cfg.DragForceEnabled)
                         Lbl($"Drag: {v2skill.CurrentDragForce:F0}N", 90);
+                    if (v2cfg.ActionGuideEnabled)
+                        Lbl($"Guide: {v2skill.GuideProb:F2}", 80);
                     GUILayout.FlexibleSpace();
                     EditorGUILayout.EndHorizontal();
                 }
@@ -304,6 +308,32 @@ namespace Genesis.Sentience.Learning.EditorTools
                         Lbl($"UB: {cfg.DragUpperBodyFraction:P0}", 55);
                         GUILayout.FlexibleSpace();
                         EditorGUILayout.EndHorizontal();
+                    }
+                }
+
+                // Action Guide section
+                {
+                    var v2g = (ContinuousLearningSkillV2)_skill;
+                    if (v2g.sacConfig.ActionGuideEnabled && m.GuideActive.Count > 0)
+                    {
+                        float gp = v2g.GuideProb;
+                        float gt = v2g.GuideTaperProgress;
+                        if (_foldActionGuide = EditorGUILayout.Foldout(_foldActionGuide,
+                            $"Action Guide — p={gp:F2} (taper {gt:P0})", true, EditorStyles.foldoutHeader))
+                        {
+                            DrawGraph(100, window,
+                                (m.GuideActive, C_GUIDE, "Guided"));
+
+                            var gcfg = v2g.sacConfig;
+                            EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+                            Lbl(v2g.LastStepWasGuided ? "GUIDED" : "AGENT", 55);
+                            Lbl($"p={gp:F3}", 55);
+                            Lbl($"Taper: {gt:P0}", 70);
+                            Lbl($"{gcfg.ActionGuideProb:F2}→{gcfg.ActionGuideProbFloor:F2}", 75);
+                            Lbl($"/ {gcfg.ActionGuideTaperSteps} steps", 90);
+                            GUILayout.FlexibleSpace();
+                            EditorGUILayout.EndHorizontal();
+                        }
                     }
                 }
 

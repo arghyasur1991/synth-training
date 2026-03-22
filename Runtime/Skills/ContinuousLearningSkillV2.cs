@@ -82,10 +82,23 @@ namespace Genesis.Sentience.Learning
         private int[] _upperBodyIdx;
         private float[] _upperBodyStandingZ;
 
+        // Action guide state
+        private float[] _guideAction;   // standing-pose ctrl for each included actuator
+        private long _guideDecisionCount;
+        private Random _guideRng;
+        private bool _lastStepWasGuided;
+
         // ── Diagnostics ─────────────────────────────────────────────────
         public float CurrentDragForce => _dragOU;
         public float DragTaperProgress => sacConfig.DragTaperSteps > 0
             ? Mathf.Clamp01((float)_dragDecisionCount / sacConfig.DragTaperSteps) : 1f;
+        public float GuideProb => sacConfig.ActionGuideTaperSteps > 0
+            ? Mathf.Lerp(sacConfig.ActionGuideProb, sacConfig.ActionGuideProbFloor,
+                Mathf.Clamp01((float)_guideDecisionCount / sacConfig.ActionGuideTaperSteps))
+            : sacConfig.ActionGuideProbFloor;
+        public float GuideTaperProgress => sacConfig.ActionGuideTaperSteps > 0
+            ? Mathf.Clamp01((float)_guideDecisionCount / sacConfig.ActionGuideTaperSteps) : 1f;
+        public bool LastStepWasGuided => _lastStepWasGuided;
         public float RawReward => _reward?.LastRawReward ?? 0f;
         public float CenteredReward => _reward?.LastCenteredReward ?? 0f;
         public float RewardBar => _reward?.RewardBar ?? 0f;
@@ -175,6 +188,9 @@ namespace Genesis.Sentience.Learning
             if (sacConfig.DragForceEnabled)
                 InitDragForce(mjModel, mjData, nb);
 
+            if (sacConfig.ActionGuideEnabled)
+                InitActionGuide(mjModel, mjData);
+
             Debug.Log($"ContinuousLearningV2: Initialized — " +
                 $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim})" +
                 $", head={(_headBodyIdx > 0 ? $"body{_headBodyIdx} (standZ={_standingHeadZ:F3})" : "NOT FOUND")}" +
@@ -182,6 +198,8 @@ namespace Genesis.Sentience.Learning
                 (sacConfig.DragForceEnabled ? $", drag={sacConfig.DragForceNewtons}N→{sacConfig.DragForceFloor}N " +
                     $"over {sacConfig.DragTaperSteps} steps (OU σ={sacConfig.DragForceOUSigma})" +
                     $", upperBody={_upperBodyIdx?.Length ?? 0} ({sacConfig.DragUpperBodyFraction:P0})" : "") +
+                (sacConfig.ActionGuideEnabled ? $", guide={sacConfig.ActionGuideProb:F2}→{sacConfig.ActionGuideProbFloor:F2}" +
+                    $" / {sacConfig.ActionGuideTaperSteps} steps" : "") +
                 (sacConfig.PerJointOUSigmaEnabled ? ", perJointOU=ON" : "") +
                 $", weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
                 $"C={rewardWeights.Contact:F2} E={rewardWeights.Energy:F2} I={rewardWeights.Imitation:F2}");
@@ -379,6 +397,63 @@ namespace Genesis.Sentience.Learning
             }
         }
 
+        /// <summary>
+        /// Capture the standing-pose ctrl values for each included actuator.
+        /// At init time, ctrl has just been set to standing-pose positions by
+        /// SynthMotorSystem.InitializeControlsToCurrentPositions().
+        /// </summary>
+        private unsafe void InitActionGuide(MujocoLib.mjModel_* model, MujocoLib.mjData_* data)
+        {
+            _guideRng = new Random(123);
+            _guideAction = new float[_filter.actDim];
+
+            for (int i = 0; i < _filter.actDim; i++)
+            {
+                int mjIdx = _filter.includedActuatorIdx[i];
+                float ctrlVal = (float)data->ctrl[mjIdx];
+                _guideAction[i] = Mathf.Clamp(ctrlVal,
+                    -sacConfig.ActionScale, sacConfig.ActionScale);
+            }
+
+            float absMax = 0f;
+            for (int i = 0; i < _guideAction.Length; i++)
+                absMax = Mathf.Max(absMax, Mathf.Abs(_guideAction[i]));
+
+            Debug.Log($"ContinuousLearningV2: Action guide initialized — " +
+                $"actDim={_filter.actDim}, |guideMax|={absMax:F4}, " +
+                $"prob={sacConfig.ActionGuideProb:F2}→{sacConfig.ActionGuideProbFloor:F2} " +
+                $"over {sacConfig.ActionGuideTaperSteps} steps");
+        }
+
+        /// <summary>
+        /// Probabilistically replace the agent's action with the standing-pose guide.
+        /// Called on both random and policy actions, so the replay buffer gets
+        /// high-reward demonstrations even during the random exploration phase.
+        /// The critic learns Q(s, guide) > Q(s, random), creating an action-space
+        /// gradient that the actor can follow.
+        /// </summary>
+        protected override void PostProcessAction(float[] rawAction)
+        {
+            if (!sacConfig.ActionGuideEnabled || _guideAction == null) return;
+
+            _guideDecisionCount++;
+            float t = sacConfig.ActionGuideTaperSteps > 0
+                ? Mathf.Clamp01((float)_guideDecisionCount / sacConfig.ActionGuideTaperSteps)
+                : 1f;
+            float prob = Mathf.Lerp(sacConfig.ActionGuideProb, sacConfig.ActionGuideProbFloor, t);
+
+            if (_guideRng.NextDouble() < prob)
+            {
+                Buffer.BlockCopy(_guideAction, 0, rawAction, 0,
+                    rawAction.Length * sizeof(float));
+                _lastStepWasGuided = true;
+            }
+            else
+            {
+                _lastStepWasGuided = false;
+            }
+        }
+
         protected override void SaveExtraState(string directory)
         {
             if (_reward != null)
@@ -473,7 +548,8 @@ namespace Genesis.Sentience.Learning
                     _trainer?.StepsPerSecond ?? 0f,
                     _trainer?.ExperienceCount ?? 0,
                     SACTrainer?.LastWorldModelLoss ?? 0f,
-                    sacConfig.DragForceEnabled ? _dragOU : 0f);
+                    sacConfig.DragForceEnabled ? _dragOU : 0f,
+                    _lastStepWasGuided ? 1f : 0f);
             }
         }
 
