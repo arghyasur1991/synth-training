@@ -918,6 +918,12 @@ namespace Genesis.Sentience.Learning
         }
     }
 
+    public enum GuideProfileType
+    {
+        StandingPose,
+        ProneRecovery,
+    }
+
     [Serializable]
     public class SACConfig
     {
@@ -1081,13 +1087,18 @@ namespace Genesis.Sentience.Learning
 
         [UnityEngine.Header("Action Guide (Standing-Pose Injection)")]
 
-        [UnityEngine.Tooltip("Enable probabilistic injection of a standing-pose action. " +
-            "Creates Q-gradient in action space by showing the critic that 'standing-pose' " +
-            "actions produce higher reward than random actions.")]
+        [UnityEngine.Tooltip("Enable probabilistic injection of a guide action profile. " +
+            "Creates Q-gradient in action space by showing the critic that certain " +
+            "torque patterns produce higher reward than random torques.")]
         public bool ActionGuideEnabled = false;
 
+        [UnityEngine.Tooltip("Which torque profile to inject.\n" +
+            "ProneRecovery: max extension torque on spine/hip/leg X axes (arches back, pushes up).\n" +
+            "StandingPose: all-zero ctrl (no torque, ragdoll — mostly useless for motor actuators).")]
+        public GuideProfileType ActionGuideProfile = GuideProfileType.ProneRecovery;
+
         [UnityEngine.Tooltip("Initial probability of replacing the agent's action with the " +
-            "standing-pose guide action each decision step.")]
+            "guide profile each decision step.")]
         [UnityEngine.Range(0f, 1f)]
         public float ActionGuideProb = 0.3f;
 

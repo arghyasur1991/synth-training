@@ -398,31 +398,94 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
-        /// Capture the standing-pose ctrl values for each included actuator.
-        /// At init time, ctrl has just been set to standing-pose positions by
-        /// SynthMotorSystem.InitializeControlsToCurrentPositions().
+        /// Build the guide action profile. For Motor actuators, ctrl is direct torque
+        /// (ctrl × gear = N·m), so we need actual torque patterns, not position targets.
         /// </summary>
         private unsafe void InitActionGuide(MujocoLib.mjModel_* model, MujocoLib.mjData_* data)
         {
             _guideRng = new Random(123);
             _guideAction = new float[_filter.actDim];
 
-            for (int i = 0; i < _filter.actDim; i++)
+            switch (sacConfig.ActionGuideProfile)
             {
-                int mjIdx = _filter.includedActuatorIdx[i];
-                float ctrlVal = (float)data->ctrl[mjIdx];
-                _guideAction[i] = Mathf.Clamp(ctrlVal,
-                    -sacConfig.ActionScale, sacConfig.ActionScale);
+                case GuideProfileType.ProneRecovery:
+                    BuildProneRecoveryProfile(model);
+                    break;
+                default:
+                    break; // StandingPose: all zeros (no torque)
             }
 
             float absMax = 0f;
+            int nonZero = 0;
             for (int i = 0; i < _guideAction.Length; i++)
+            {
                 absMax = Mathf.Max(absMax, Mathf.Abs(_guideAction[i]));
+                if (Mathf.Abs(_guideAction[i]) > 1e-6f) nonZero++;
+            }
 
-            Debug.Log($"ContinuousLearningV2: Action guide initialized — " +
-                $"actDim={_filter.actDim}, |guideMax|={absMax:F4}, " +
+            Debug.Log($"ContinuousLearningV2: Action guide [{sacConfig.ActionGuideProfile}] — " +
+                $"actDim={_filter.actDim}, nonZero={nonZero}, |max|={absMax:F4}, " +
                 $"prob={sacConfig.ActionGuideProb:F2}→{sacConfig.ActionGuideProbFloor:F2} " +
                 $"over {sacConfig.ActionGuideTaperSteps} steps");
+        }
+
+        /// <summary>
+        /// Prone recovery profile: maximum extension torque on sagittal-plane joints.
+        /// Spine/chest/pelvis/hips X → negative ctrl (back extension, arching).
+        /// UpperLeg X → negative ctrl (hip extension, pushing pelvis up).
+        /// LowerLeg X → negative ctrl (knee extension, straightening legs).
+        /// UpperArm X → positive ctrl (shoulder flexion, pushing off ground).
+        /// </summary>
+        private unsafe void BuildProneRecoveryProfile(MujocoLib.mjModel_* model)
+        {
+            float aScale = sacConfig.ActionScale;
+
+            // keyword → (X ctrl sign, axis filter). Only X-axis matters for sagittal recovery.
+            var profileMap = new (string keyword, float xCtrl)[]
+            {
+                ("spine",      -aScale),   // back extension
+                ("chest",      -aScale),   // back extension
+                ("abdomen",    -aScale),   // back extension
+                ("pelvis",     -aScale),   // back extension
+                ("hip",        -aScale),   // hip extension
+                ("neck",       -aScale),   // head up
+                ("thigh",      -aScale),   // hip extension (alternate naming)
+                ("shin",       -aScale),   // knee extension
+                ("knee",       -aScale),   // knee extension (alternate naming)
+                ("shoulder",    aScale),   // shoulder flexion (push off ground)
+                ("upperarm",    aScale),   // push down/back
+                ("lowerarm",   -aScale),   // elbow extension (push off ground)
+                ("elbow",      -aScale),   // elbow extension (alternate naming)
+            };
+
+            var logLines = new System.Collections.Generic.List<string>();
+
+            for (int i = 0; i < _filter.actDim; i++)
+            {
+                int mjIdx = _filter.includedActuatorIdx[i];
+                string name = ReadMjName(model, model->name_actuatoradr[mjIdx]);
+                if (string.IsNullOrEmpty(name)) continue;
+
+                string lower = name.ToLowerInvariant();
+
+                // Only apply to X-axis actuators (sagittal plane)
+                bool isXAxis = lower.EndsWith("x") || lower.EndsWith("jointx");
+
+                if (!isXAxis) continue;
+
+                foreach (var (keyword, xCtrl) in profileMap)
+                {
+                    if (lower.Contains(keyword))
+                    {
+                        _guideAction[i] = xCtrl;
+                        logLines.Add($"  [{i}] {name} → ctrl={xCtrl:F2}");
+                        break;
+                    }
+                }
+            }
+
+            Debug.Log($"ContinuousLearningV2: ProneRecovery profile — " +
+                $"{logLines.Count} X-axis actuators assigned:\n{string.Join("\n", logLines)}");
         }
 
         /// <summary>
