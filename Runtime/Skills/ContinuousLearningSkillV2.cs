@@ -83,6 +83,7 @@ namespace Genesis.Sentience.Learning
         private float[] _upperBodyStandingZ;
 
         // ── Diagnostics ─────────────────────────────────────────────────
+        public float CurrentDragForce => _dragOU;
         public float RawReward => _reward?.LastRawReward ?? 0f;
         public float CenteredReward => _reward?.LastCenteredReward ?? 0f;
         public float RewardBar => _reward?.RewardBar ?? 0f;
@@ -469,7 +470,8 @@ namespace Genesis.Sentience.Learning
                     agent?.LastAlphaLoss ?? 0f,
                     _trainer?.StepsPerSecond ?? 0f,
                     _trainer?.ExperienceCount ?? 0,
-                    SACTrainer?.LastWorldModelLoss ?? 0f);
+                    SACTrainer?.LastWorldModelLoss ?? 0f,
+                    sacConfig.DragForceEnabled ? _dragOU : 0f);
             }
         }
 

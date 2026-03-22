@@ -36,6 +36,7 @@ namespace Genesis.Sentience.Learning.EditorTools
         private bool _foldDynamic = true;
         private bool _foldV2Reward = true;
         private bool _foldV2Progress = true;
+        private bool _foldDragForce = true;
 
         static readonly Color C_RAW = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_CENTERED = new Color(0.40f, 0.70f, 1.00f);
@@ -68,6 +69,7 @@ namespace Genesis.Sentience.Learning.EditorTools
         static readonly Color C_WMLOSS = new Color(0.00f, 0.74f, 0.83f);
         static readonly Color C_PROGRESS = new Color(0.40f, 0.90f, 0.40f);
         static readonly Color C_CONTACT_R = new Color(0.01f, 0.66f, 0.96f);
+        static readonly Color C_DRAG = new Color(1.00f, 0.47f, 0.00f);
 
         static readonly Color C_SPS = new Color(0.30f, 0.90f, 0.35f);
         static readonly Color C_BUF = new Color(0.40f, 0.70f, 1.00f);
@@ -270,16 +272,36 @@ namespace Genesis.Sentience.Learning.EditorTools
                     Lbl($"AvgH%: {m.AvgHeightFraction.Latest:F3}", 90);
                     Lbl($"Gate: {m.DiscoveryGate.Latest:F2}", 70);
                     Lbl($"RootZ: {m.RootZ.Latest:F3}", 100);
-                    var v2cfg = ((ContinuousLearningSkillV2)_skill).sacConfig;
+                    var v2skill = (ContinuousLearningSkillV2)_skill;
+                    var v2cfg = v2skill.sacConfig;
                     if (v2cfg.ContextDim > 0)
                     {
                         Lbl($"Ctx: {v2cfg.ContextDim}d", 60);
                         Lbl($"Seq: {v2cfg.ContextSeqLen}", 50);
                     }
                     if (v2cfg.DragForceEnabled)
-                        Lbl($"Drag: {v2cfg.DragForceNewtons}N", 80);
+                        Lbl($"Drag: {v2skill.CurrentDragForce:F0}N", 90);
                     GUILayout.FlexibleSpace();
                     EditorGUILayout.EndHorizontal();
+                }
+
+                if (m.DragForce.Count > 0)
+                {
+                    if (_foldDragForce = EditorGUILayout.Foldout(_foldDragForce, "Drag Force (OU)", true, EditorStyles.foldoutHeader))
+                    {
+                        DrawGraph(120, window,
+                            (m.DragForce, C_DRAG, "DragN"));
+
+                        var v2s = (ContinuousLearningSkillV2)_skill;
+                        var cfg = v2s.sacConfig;
+                        EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+                        Lbl($"Current: {v2s.CurrentDragForce:F0}N", 100);
+                        Lbl($"Range: [{cfg.DragForceMin:F0}, {cfg.DragForceMax:F0}]", 120);
+                        Lbl($"Mean: {cfg.DragForceNewtons:F0}N", 80);
+                        Lbl($"UB%: {cfg.DragUpperBodyFraction:P0}", 60);
+                        GUILayout.FlexibleSpace();
+                        EditorGUILayout.EndHorizontal();
+                    }
                 }
 
                 if (m.WorldModelLoss.Count > 0)
