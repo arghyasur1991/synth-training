@@ -1075,10 +1075,10 @@ namespace Genesis.Sentience.Learning
         [UnityEngine.Tooltip("Steps over which drag force ramps from 0 to full strength.")]
         public int DragForceWarmupSteps = 5000;
 
-        [UnityEngine.Tooltip("Fraction of root force applied to each upper body part " +
-            "(chest, spine, shoulders). 0 = root+head only.")]
+        [UnityEngine.Tooltip("Force fraction applied to each upper body bone " +
+            "(chest, spine, shoulders, head). 1.0 = full base magnitude per bone.")]
         [UnityEngine.Range(0f, 1f)]
-        public float DragUpperBodyFraction = 0.2f;
+        public float DragUpperBodyFraction = 0.5f;
 
         [UnityEngine.Header("Dyna-Style Dreaming")]
 
