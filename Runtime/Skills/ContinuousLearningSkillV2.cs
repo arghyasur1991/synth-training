@@ -443,19 +443,21 @@ namespace Genesis.Sentience.Learning
             // keyword → (X ctrl sign, axis filter). Only X-axis matters for sagittal recovery.
             var profileMap = new (string keyword, float xCtrl)[]
             {
-                ("spine",      -aScale),   // back extension
-                ("chest",      -aScale),   // back extension
-                ("abdomen",    -aScale),   // back extension
-                ("pelvis",     -aScale),   // back extension
-                ("hip",        -aScale),   // hip extension
-                ("neck",       -aScale),   // head up
-                ("thigh",      -aScale),   // hip extension (alternate naming)
-                ("shin",       -aScale),   // knee extension
-                ("knee",       -aScale),   // knee extension (alternate naming)
-                ("shoulder",    aScale),   // shoulder flexion (push off ground)
-                ("upperarm",    aScale),   // push down/back
-                ("lowerarm",   -aScale),   // elbow extension (push off ground)
-                ("elbow",      -aScale),   // elbow extension (alternate naming)
+                ("spine",       aScale),   // back extension (arch)
+                ("chest",       aScale),   // back extension
+                ("abdomen",     aScale),   // back extension
+                ("pelvis",      aScale),   // back extension
+                ("neck",        aScale),   // head up / back
+                ("thigh",       aScale),   // hip extension (straighten legs back)
+                ("shin",        aScale),   // knee extension (straighten legs)
+                ("hip",         aScale),   // hip extension (alternate naming)
+                ("knee",        aScale),   // knee extension (alternate naming)
+                ("shldr",      -aScale),   // shoulder extension (push off ground) [Daz name]
+                ("shoulder",   -aScale),   // shoulder extension (generic name)
+                ("forearm",     aScale),   // elbow extension [Daz name]
+                ("upperarm",   -aScale),   // push down/back
+                ("lowerarm",    aScale),   // elbow extension (generic)
+                ("elbow",       aScale),   // elbow extension (alternate naming)
             };
 
             var matchedLines = new System.Collections.Generic.List<string>();
