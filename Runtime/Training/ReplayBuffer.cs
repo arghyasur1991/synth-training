@@ -350,40 +350,34 @@ namespace Genesis.Sentience.Learning
                 int histBase = i * seqLen * entryDim;
                 int maskBase = i * seqLen;
 
-                // The last slot of the history window = the current transition
-                // Walk backward to fill older entries
-                for (int s = seqLen - 1; s >= 0; s--)
+                // Single-pass O(seqLen) episode boundary detection:
+                // Walk backward from idx to find the max valid stepsBack.
+                int maxValidStepsBack = 0;
+                for (int k = 0; k < seqLen; k++)
+                {
+                    if (k >= n) break;
+                    if (k > 0)
+                    {
+                        int checkIdx = (idx - k + _capacity) % _capacity;
+                        if (_dones[checkIdx] > 0.5f) break;
+                    }
+                    maxValidStepsBack = k;
+                }
+
+                for (int s = 0; s < seqLen; s++)
                 {
                     int stepsBack = (seqLen - 1) - s;
-                    int bufIdx = (idx - stepsBack + _capacity) % _capacity;
-                    bool outOfRange = stepsBack >= n;
-
-                    // Check for episode boundary: if any transition between bufIdx and idx
-                    // has done=1, this entry is from a different episode
-                    bool crossedEpisode = false;
-                    if (!outOfRange && stepsBack > 0)
-                    {
-                        for (int k = 0; k < stepsBack; k++)
-                        {
-                            int checkIdx = (idx - k - 1 + _capacity) % _capacity;
-                            if (_dones[checkIdx] > 0.5f)
-                            {
-                                crossedEpisode = true;
-                                break;
-                            }
-                        }
-                    }
-
                     int entryOffset = histBase + s * entryDim;
                     int maskOffset = maskBase + s;
 
-                    if (outOfRange || crossedEpisode)
+                    if (stepsBack > maxValidStepsBack)
                     {
                         Array.Clear(batch.HistoryData, entryOffset, entryDim);
                         batch.HistoryMask[maskOffset] = 1f;
                     }
                     else
                     {
+                        int bufIdx = (idx - stepsBack + _capacity) % _capacity;
                         Buffer.BlockCopy(_obs, bufIdx * _obsStride,
                             batch.HistoryData, entryOffset * sizeof(float), _obsStride);
                         Buffer.BlockCopy(_actions, bufIdx * _actStride,

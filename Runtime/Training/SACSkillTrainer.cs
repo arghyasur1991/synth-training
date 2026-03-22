@@ -62,11 +62,19 @@ namespace Genesis.Sentience.Learning
 
             if (_config.DreamEnabled)
             {
-                _worldModel = new WorldModel(obsDim, actDim, _config.WorldModelLr, device,
-                    _config.WorldModelHidden1, _config.WorldModelHidden2);
-                _dreamBatch = new Batch(_config.DreamBatchSize, obsDim, actDim);
-                Debug.Log($"SACSkillTrainer: Dreaming enabled — interval={_config.DreamInterval}, " +
-                    $"warmup={_config.DreamWarmupSteps}, batches={_config.DreamBatchCount}x{_config.DreamBatchSize}");
+                if (_useSequences)
+                {
+                    Debug.Log("SACSkillTrainer: Dreaming disabled — incompatible with temporal context " +
+                        "(networks expect augmented obs, world model predicts raw obs).");
+                }
+                else
+                {
+                    _worldModel = new WorldModel(obsDim, actDim, _config.WorldModelLr, device,
+                        _config.WorldModelHidden1, _config.WorldModelHidden2);
+                    _dreamBatch = new Batch(_config.DreamBatchSize, obsDim, actDim);
+                    Debug.Log($"SACSkillTrainer: Dreaming enabled — interval={_config.DreamInterval}, " +
+                        $"warmup={_config.DreamWarmupSteps}, batches={_config.DreamBatchCount}x{_config.DreamBatchSize}");
+                }
             }
 
             Debug.Log($"SACSkillTrainer: Initialized (obs={obsDim}, act={actDim}, " +
@@ -122,23 +130,12 @@ namespace Genesis.Sentience.Learning
                 _agent.SyncInferenceWeights();
 
             // --- Dyna dreaming (single-step, no temporal context) ---
-            if (_worldModel != null)
+            // When context is enabled, all networks expect augmented obs (obsDim + contextDim).
+            // The WorldModel predicts raw obs only, so dream generation is incompatible —
+            // skip dreaming entirely to avoid dimension mismatches and distribution shift.
+            if (_worldModel != null && !_useSequences)
             {
-                // World model always trains on single-step transitions.
-                // When using sequences, provide a flat batch view for the world model.
-                Batch wmBatch;
-                if (_useSequences)
-                {
-                    if (_batch.Obs == null)
-                        _batch = new Batch(_config.BatchSize, _buffer.ObsDim, _buffer.ActDim);
-                    _buffer.SampleInto(_batch, _perBeta);
-                    wmBatch = _batch;
-                }
-                else
-                {
-                    wmBatch = _batch;
-                }
-
+                Batch wmBatch = _batch;
                 _lastWorldModelLoss = _worldModel.TrainStep(wmBatch);
 
                 int wmSteps = _worldModel.TrainSteps;

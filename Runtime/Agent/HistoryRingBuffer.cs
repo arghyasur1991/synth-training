@@ -20,6 +20,8 @@ namespace Genesis.Sentience.Learning
         private readonly int _entryDim; // obsDim + actDim + 1
 
         private readonly float[] _data; // seqLen * entryDim, circular
+        private readonly float[] _packBuf; // pre-allocated for PackIntoTensor
+        private readonly float[] _maskBuf; // pre-allocated for WritePaddingMask
         private int _head;
         private int _count;
 
@@ -34,6 +36,8 @@ namespace Genesis.Sentience.Learning
             _actDim = actDim;
             _entryDim = obsDim + actDim + 1;
             _data = new float[seqLen * _entryDim];
+            _packBuf = new float[seqLen * _entryDim];
+            _maskBuf = new float[seqLen];
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -55,25 +59,23 @@ namespace Genesis.Sentience.Learning
         /// </summary>
         public void PackIntoTensor(Tensor output)
         {
-            int total = _seqLen * _entryDim;
-            var flat = new float[total];
+            int padCount = _seqLen - _count;
+            if (padCount > 0)
+                Array.Clear(_packBuf, 0, padCount * _entryDim);
 
             if (_count > 0)
             {
                 int oldest = (_head - _count + _seqLen) % _seqLen;
-                int padCount = _seqLen - _count;
-
                 for (int i = 0; i < _count; i++)
                 {
                     int srcIdx = (oldest + i) % _seqLen;
-                    int dstOffset = (padCount + i) * _entryDim;
-                    int srcOffset = srcIdx * _entryDim;
-                    Buffer.BlockCopy(_data, srcOffset * sizeof(float),
-                        flat, dstOffset * sizeof(float), _entryDim * sizeof(float));
+                    Buffer.BlockCopy(_data, srcIdx * _entryDim * sizeof(float),
+                        _packBuf, (padCount + i) * _entryDim * sizeof(float),
+                        _entryDim * sizeof(float));
                 }
             }
 
-            output.bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes<float>(flat.AsSpan());
+            output.bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes<float>(_packBuf.AsSpan());
         }
 
         /// <summary>
@@ -83,12 +85,13 @@ namespace Genesis.Sentience.Learning
         /// </summary>
         public void WritePaddingMask(Tensor mask)
         {
-            var maskData = new float[_seqLen];
             int padCount = _seqLen - _count;
             for (int i = 0; i < padCount; i++)
-                maskData[i] = 1f;
+                _maskBuf[i] = 1f;
+            for (int i = padCount; i < _seqLen; i++)
+                _maskBuf[i] = 0f;
 
-            mask.bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes<float>(maskData.AsSpan());
+            mask.bytes = System.Runtime.InteropServices.MemoryMarshal.AsBytes<float>(_maskBuf.AsSpan());
         }
 
         public void Reset()

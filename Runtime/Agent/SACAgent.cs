@@ -1010,8 +1010,9 @@ namespace Genesis.Sentience.Learning
             "vector prepended to observations for actor and critic.")]
         public int ContextDim = 0;
 
-        [UnityEngine.Tooltip("History window length (number of past transitions).")]
-        public int ContextSeqLen = 64;
+        [UnityEngine.Tooltip("History window length (number of past transitions). " +
+            "Lower = faster training (16 recommended). 64 is very expensive on MPS.")]
+        public int ContextSeqLen = 16;
 
         [UnityEngine.Tooltip("Transformer hidden dimension (d_model).")]
         public int ContextDModel = 128;
