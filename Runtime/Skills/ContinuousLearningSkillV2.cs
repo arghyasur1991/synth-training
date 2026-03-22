@@ -473,7 +473,7 @@ namespace Genesis.Sentience.Learning
 
                 string lower = name.ToLowerInvariant();
 
-                bool isXAxis = lower.EndsWith("x") || lower.EndsWith("jointx");
+                bool isXAxis = lower.Contains("jointx");
 
                 if (!isXAxis)
                 {
