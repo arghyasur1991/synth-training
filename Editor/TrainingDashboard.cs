@@ -266,6 +266,12 @@ namespace Genesis.Sentience.Learning.EditorTools
                     EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
                     Lbl($"Height%: {m.HeightFraction.Latest:F3}", 100);
                     Lbl($"RootZ: {m.RootZ.Latest:F3}", 100);
+                    var v2cfg = ((ContinuousLearningSkillV2)_skill).sacConfig;
+                    if (v2cfg.ContextDim > 0)
+                    {
+                        Lbl($"Ctx: {v2cfg.ContextDim}d", 60);
+                        Lbl($"Seq: {v2cfg.ContextSeqLen}", 50);
+                    }
                     GUILayout.FlexibleSpace();
                     EditorGUILayout.EndHorizontal();
                 }
@@ -378,7 +384,12 @@ namespace Genesis.Sentience.Learning.EditorTools
                 var hfCol = Color.Lerp(PhaseColors[0], PhaseColors[2], hf);
                 var oldCol = GUI.contentColor;
                 GUI.contentColor = hfCol;
-                EditorGUILayout.LabelField($"V2 h={hf:F2}", EditorStyles.boldLabel, GUILayout.Width(80));
+                var v2Skill = (ContinuousLearningSkillV2)_skill;
+                int ctxDim = v2Skill.sacConfig.ContextDim;
+                string v2Label = ctxDim > 0
+                    ? $"V2 h={hf:F2} ctx={ctxDim}"
+                    : $"V2 h={hf:F2}";
+                EditorGUILayout.LabelField(v2Label, EditorStyles.boldLabel, GUILayout.Width(ctxDim > 0 ? 140 : 80));
                 GUI.contentColor = oldCol;
             }
             else if (isContinuous)

@@ -283,6 +283,119 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
+        /// Sample transitions with contiguous history windows for temporal context.
+        /// For each sampled index i, reads the preceding seqLen-1 entries from the
+        /// circular buffer. Episode boundaries (done flags) truncate the history
+        /// and remaining entries are zero-padded with mask = 1.
+        /// </summary>
+        public void SampleSequencesInto(SequenceBatch batch, float perBeta)
+        {
+            int batchSize = batch.Size;
+            int seqLen = batch.SeqLen;
+            int entryDim = batch.EntryDim;
+            int n;
+
+            lock (_lock)
+            {
+                DrainStaging();
+                n = _count;
+                float total = _tree[1];
+
+                if (total <= 0f)
+                {
+                    for (int i = 0; i < batchSize; i++)
+                    {
+                        batch.Indices[i] = _rng.Next(n);
+                        batch.ISWeights[i] = 1f;
+                    }
+                }
+                else
+                {
+                    float segment = total / batchSize;
+                    for (int i = 0; i < batchSize; i++)
+                    {
+                        float lo = segment * i;
+                        float hi = segment * (i + 1);
+                        float value = lo + (float)(_rng.NextDouble() * (hi - lo));
+                        if (value >= total) value = total * 0.999999f;
+
+                        int idx = TreeFind(value);
+                        if (idx >= n) idx = n - 1;
+                        batch.Indices[i] = idx;
+
+                        float prob = _tree[_treeCapacity + idx] / total;
+                        if (prob < 1e-10f) prob = 1e-10f;
+                        batch.ISWeights[i] = (float)Math.Pow(n * prob, -perBeta);
+                    }
+
+                    float maxW = batch.ISWeights[0];
+                    for (int i = 1; i < batchSize; i++)
+                        if (batch.ISWeights[i] > maxW) maxW = batch.ISWeights[i];
+                    if (maxW > 0f)
+                        for (int i = 0; i < batchSize; i++)
+                            batch.ISWeights[i] /= maxW;
+                }
+            }
+
+            for (int i = 0; i < batchSize; i++)
+            {
+                int idx = batch.Indices[i];
+
+                Buffer.BlockCopy(_obs, idx * _obsStride, batch.Obs, i * _obsStride, _obsStride);
+                Buffer.BlockCopy(_actions, idx * _actStride, batch.Actions, i * _actStride, _actStride);
+                batch.Rewards[i] = _rewards[idx];
+                Buffer.BlockCopy(_nextObs, idx * _obsStride, batch.NextObs, i * _obsStride, _obsStride);
+                batch.Dones[i] = _dones[idx];
+
+                int histBase = i * seqLen * entryDim;
+                int maskBase = i * seqLen;
+
+                // The last slot of the history window = the current transition
+                // Walk backward to fill older entries
+                for (int s = seqLen - 1; s >= 0; s--)
+                {
+                    int stepsBack = (seqLen - 1) - s;
+                    int bufIdx = (idx - stepsBack + _capacity) % _capacity;
+                    bool outOfRange = stepsBack >= n;
+
+                    // Check for episode boundary: if any transition between bufIdx and idx
+                    // has done=1, this entry is from a different episode
+                    bool crossedEpisode = false;
+                    if (!outOfRange && stepsBack > 0)
+                    {
+                        for (int k = 0; k < stepsBack; k++)
+                        {
+                            int checkIdx = (idx - k - 1 + _capacity) % _capacity;
+                            if (_dones[checkIdx] > 0.5f)
+                            {
+                                crossedEpisode = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    int entryOffset = histBase + s * entryDim;
+                    int maskOffset = maskBase + s;
+
+                    if (outOfRange || crossedEpisode)
+                    {
+                        Array.Clear(batch.HistoryData, entryOffset, entryDim);
+                        batch.HistoryMask[maskOffset] = 1f;
+                    }
+                    else
+                    {
+                        Buffer.BlockCopy(_obs, bufIdx * _obsStride,
+                            batch.HistoryData, entryOffset * sizeof(float), _obsStride);
+                        Buffer.BlockCopy(_actions, bufIdx * _actStride,
+                            batch.HistoryData, (entryOffset + _obsDim) * sizeof(float), _actStride);
+                        batch.HistoryData[entryOffset + _obsDim + _actDim] = _rewards[bufIdx];
+                        batch.HistoryMask[maskOffset] = 0f;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// Update priorities for sampled transitions after computing TD errors.
         /// </summary>
         public void UpdatePriorities(int[] indices, float[] absTDErrors, int count)
@@ -443,6 +556,50 @@ namespace Genesis.Sentience.Learning
             Indices = new int[size];
             ISWeights = new float[size];
             TDErrors = new float[size];
+        }
+    }
+
+    /// <summary>
+    /// Extended batch that includes a history window for each sampled transition.
+    /// Used by the TemporalContextEncoder for history-conditioned SAC.
+    /// HistoryData layout: flat [batchSize * seqLen * entryDim] in (batch, seq, entry) order.
+    /// </summary>
+    public struct SequenceBatch
+    {
+        public readonly float[] Obs;
+        public readonly float[] Actions;
+        public readonly float[] Rewards;
+        public readonly float[] NextObs;
+        public readonly float[] Dones;
+        public readonly int[] Indices;
+        public readonly float[] ISWeights;
+        public readonly float[] TDErrors;
+        public readonly int Size;
+        public readonly int ObsDim;
+        public readonly int ActDim;
+
+        public readonly float[] HistoryData;   // Size * SeqLen * EntryDim
+        public readonly float[] HistoryMask;   // Size * SeqLen (1 = padded, 0 = valid)
+        public readonly int SeqLen;
+        public readonly int EntryDim;          // ObsDim + ActDim + 1
+
+        public SequenceBatch(int size, int obsDim, int actDim, int seqLen)
+        {
+            Size = size;
+            ObsDim = obsDim;
+            ActDim = actDim;
+            SeqLen = seqLen;
+            EntryDim = obsDim + actDim + 1;
+            Obs = new float[size * obsDim];
+            Actions = new float[size * actDim];
+            Rewards = new float[size];
+            NextObs = new float[size * obsDim];
+            Dones = new float[size];
+            Indices = new int[size];
+            ISWeights = new float[size];
+            TDErrors = new float[size];
+            HistoryData = new float[size * seqLen * EntryDim];
+            HistoryMask = new float[size * seqLen];
         }
     }
 }

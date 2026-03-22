@@ -7,6 +7,8 @@ using Mujoco;
 using Genesis.Sentience.Synth;
 using Random = System.Random;
 using Debug = UnityEngine.Debug;
+using TorchSharp;
+using Tensor = TorchSharp.torch.Tensor;
 
 namespace Genesis.Sentience.Learning
 {
@@ -62,6 +64,14 @@ namespace Genesis.Sentience.Learning
 
         private ContinuingRewardV2 _reward;
         private float _bodyWeight;
+
+        // Temporal context history (null when ContextDim == 0)
+        private HistoryRingBuffer _historyBuffer;
+        private Tensor _historyTensor;  // preallocated (seqLen, 1, entryDim)
+        private Tensor _historyMask;    // preallocated (1, seqLen) float
+        private float _lastScaledReward;
+        private float[] _historyObsCopy;   // scratch copy to avoid aliasing _normalizedObs
+        private float[] _historyActCopy;   // scratch copy for action
 
         // ── Diagnostics ─────────────────────────────────────────────────
         public float RawReward => _reward?.LastRawReward ?? 0f;
@@ -127,9 +137,23 @@ namespace Genesis.Sentience.Learning
             if (referenceClips != null && referenceClips.Length > 0)
                 IndexReferenceClips();
 
+            if (sacConfig.ContextDim > 0)
+            {
+                var (obsDim, actDim) = GetDimensions();
+                int entryDim = obsDim + actDim + 1;
+                _historyBuffer = new HistoryRingBuffer(sacConfig.ContextSeqLen, obsDim, actDim);
+                _historyTensor = torch.zeros(sacConfig.ContextSeqLen, 1, entryDim,
+                    dtype: TorchSharp.torch.ScalarType.Float32);
+                _historyMask = torch.zeros(1, sacConfig.ContextSeqLen,
+                    dtype: TorchSharp.torch.ScalarType.Float32);
+                _historyObsCopy = new float[obsDim];
+                _historyActCopy = new float[actDim];
+            }
+
             Debug.Log($"ContinuousLearningV2: Initialized — " +
-                $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim}), " +
-                $"weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
+                $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim})" +
+                (sacConfig.ContextDim > 0 ? $", context={sacConfig.ContextDim}, seqLen={sacConfig.ContextSeqLen}" : "") +
+                $", weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
                 $"C={rewardWeights.Contact:F2} E={rewardWeights.Energy:F2} I={rewardWeights.Imitation:F2}");
         }
 
@@ -146,23 +170,6 @@ namespace Genesis.Sentience.Learning
         {
             return _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
                 in rewardWeights, _contact, _bodyWeight);
-        }
-
-        protected override void OnTransitionStored(float reward, bool done)
-        {
-            if (_metrics != null)
-            {
-                var agent = SACTrainer?.Agent;
-                _metrics.Sample(
-                    in _reward.LastSnapshot,
-                    agent?.Alpha ?? 0f,
-                    agent?.LastQLoss ?? 0f,
-                    agent?.LastActorLoss ?? 0f,
-                    agent?.LastAlphaLoss ?? 0f,
-                    _trainer?.StepsPerSecond ?? 0f,
-                    _trainer?.ExperienceCount ?? 0,
-                    SACTrainer?.LastWorldModelLoss ?? 0f);
-            }
         }
 
         protected override void SaveExtraState(string directory)
@@ -212,6 +219,72 @@ namespace Genesis.Sentience.Learning
         protected override void OnSkillValidate()
         {
             if (sacConfig == null) sacConfig = new SACConfig();
+        }
+
+        // ── Temporal context integration ─────────────────────────────────
+
+        protected override float[] InferAction(float[] fullObs)
+        {
+            if (_historyBuffer == null)
+                return _trainer.GetAction(fullObs);
+
+            _historyBuffer.PackIntoTensor(_historyTensor);
+            _historyBuffer.WritePaddingMask(_historyMask);
+
+            var sacTrainer = SACTrainer;
+            var action = sacTrainer.GetActionWithContext(fullObs, _historyTensor, _historyMask);
+
+            PushToHistory(fullObs, action);
+            return action;
+        }
+
+        protected override float[] InferDeterministicAction(float[] fullObs)
+        {
+            if (_historyBuffer == null)
+                return _trainer.GetDeterministicAction(fullObs);
+
+            _historyBuffer.PackIntoTensor(_historyTensor);
+            _historyBuffer.WritePaddingMask(_historyMask);
+
+            var sacTrainer = SACTrainer;
+            var action = sacTrainer.GetDeterministicActionWithContext(fullObs, _historyTensor, _historyMask);
+
+            PushToHistory(fullObs, action);
+            return action;
+        }
+
+        protected override void OnTransitionStored(float reward, bool done)
+        {
+            _lastScaledReward = reward * rewardScale;
+
+            if (_metrics != null)
+            {
+                var agent = SACTrainer?.Agent;
+                _metrics.Sample(
+                    in _reward.LastSnapshot,
+                    agent?.Alpha ?? 0f,
+                    agent?.LastQLoss ?? 0f,
+                    agent?.LastActorLoss ?? 0f,
+                    agent?.LastAlphaLoss ?? 0f,
+                    _trainer?.StepsPerSecond ?? 0f,
+                    _trainer?.ExperienceCount ?? 0,
+                    SACTrainer?.LastWorldModelLoss ?? 0f);
+            }
+        }
+
+        /// <summary>
+        /// Push (obs, action, reward) into the history ring buffer immediately
+        /// after inference. Uses the previous step's reward since the current
+        /// step's reward isn't available yet. Copies data to avoid aliasing
+        /// _normalizedObs which is overwritten each step.
+        /// </summary>
+        private void PushToHistory(float[] obs, float[] action)
+        {
+            if (_historyBuffer == null) return;
+
+            Buffer.BlockCopy(obs, 0, _historyObsCopy, 0, obs.Length * sizeof(float));
+            Buffer.BlockCopy(action, 0, _historyActCopy, 0, action.Length * sizeof(float));
+            _historyBuffer.Push(_historyObsCopy, _historyActCopy, _lastScaledReward);
         }
 
         // ── Reference Motion Indexing (reused from V1) ──────────────────

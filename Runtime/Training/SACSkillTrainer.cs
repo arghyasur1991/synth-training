@@ -14,8 +14,10 @@ namespace Genesis.Sentience.Learning
         private SACAgent _agent;
         private ReplayBuffer _buffer;
         private Batch _batch;
+        private SequenceBatch _seqBatch;
         private readonly SACConfig _config;
         private readonly int _learningStarts;
+        private bool _useSequences;
 
         private float _perBeta;
         private float _perBetaIncrement;
@@ -46,7 +48,12 @@ namespace Genesis.Sentience.Learning
             _agent = new SACAgent(obsDim, actDim, _config, device);
             _buffer = new ReplayBuffer(_config.BufferSize, obsDim, actDim,
                 perAlpha: _config.PERAlpha);
-            _batch = new Batch(_config.BatchSize, obsDim, actDim);
+
+            _useSequences = _config.ContextDim > 0;
+            if (_useSequences)
+                _seqBatch = new SequenceBatch(_config.BatchSize, obsDim, actDim, _config.ContextSeqLen);
+            else
+                _batch = new Batch(_config.BatchSize, obsDim, actDim);
 
             _perBeta = _config.PERBetaStart;
             _perBetaIncrement = _config.PERBetaAnnealSteps > 0
@@ -63,12 +70,20 @@ namespace Genesis.Sentience.Learning
             }
 
             Debug.Log($"SACSkillTrainer: Initialized (obs={obsDim}, act={actDim}, " +
-                $"device={device}, buffer={_config.BufferSize})");
+                $"device={device}, buffer={_config.BufferSize}" +
+                (_useSequences ? $", context={_config.ContextDim}, seqLen={_config.ContextSeqLen}" : "") +
+                ")");
         }
 
         public override float[] GetAction(float[] obs) => _agent.GetAction(obs);
         public override float[] GetDeterministicAction(float[] obs) => _agent.GetDeterministicAction(obs);
         public override float[] GetRandomAction(Random rng) => _agent.GetRandomAction(rng);
+
+        public float[] GetActionWithContext(float[] obs, TorchSharp.torch.Tensor histSeq, TorchSharp.torch.Tensor histMask)
+            => _agent.GetActionWithContext(obs, histSeq, histMask);
+
+        public float[] GetDeterministicActionWithContext(float[] obs, TorchSharp.torch.Tensor histSeq, TorchSharp.torch.Tensor histMask)
+            => _agent.GetDeterministicActionWithContext(obs, histSeq, histMask);
 
         public override void StoreTransition(float[] obs, float[] action, float reward,
                                              float[] nextObs, bool done)
@@ -80,9 +95,25 @@ namespace Genesis.Sentience.Learning
 
         protected override void DoTrainStep()
         {
-            _buffer.SampleInto(_batch, _perBeta);
-            _agent.TrainStep(_batch);
-            _buffer.UpdatePriorities(_batch.Indices, _batch.TDErrors, _batch.Size);
+            int[] indices;
+            float[] tdErrors;
+
+            if (_useSequences)
+            {
+                _buffer.SampleSequencesInto(_seqBatch, _perBeta);
+                _agent.TrainStep(_seqBatch);
+                indices = _seqBatch.Indices;
+                tdErrors = _seqBatch.TDErrors;
+            }
+            else
+            {
+                _buffer.SampleInto(_batch, _perBeta);
+                _agent.TrainStep(_batch);
+                indices = _batch.Indices;
+                tdErrors = _batch.TDErrors;
+            }
+
+            _buffer.UpdatePriorities(indices, tdErrors, _config.BatchSize);
 
             _perBeta = Math.Min(1f, _perBeta + _perBetaIncrement);
 
@@ -90,10 +121,25 @@ namespace Genesis.Sentience.Learning
             if ((steps + 1) % _config.WeightSyncFrequency == 0)
                 _agent.SyncInferenceWeights();
 
-            // --- Dyna dreaming ---
+            // --- Dyna dreaming (single-step, no temporal context) ---
             if (_worldModel != null)
             {
-                _lastWorldModelLoss = _worldModel.TrainStep(_batch);
+                // World model always trains on single-step transitions.
+                // When using sequences, provide a flat batch view for the world model.
+                Batch wmBatch;
+                if (_useSequences)
+                {
+                    if (_batch.Obs == null)
+                        _batch = new Batch(_config.BatchSize, _buffer.ObsDim, _buffer.ActDim);
+                    _buffer.SampleInto(_batch, _perBeta);
+                    wmBatch = _batch;
+                }
+                else
+                {
+                    wmBatch = _batch;
+                }
+
+                _lastWorldModelLoss = _worldModel.TrainStep(wmBatch);
 
                 int wmSteps = _worldModel.TrainSteps;
                 if (wmSteps <= 100 && wmSteps % 100 == 0 ||
@@ -112,7 +158,7 @@ namespace Genesis.Sentience.Learning
                 {
                     for (int i = 0; i < _config.DreamBatchCount; i++)
                     {
-                        _worldModel.GenerateDreamBatch(_batch, _agent.Actor, _dreamBatch);
+                        _worldModel.GenerateDreamBatch(wmBatch, _agent.Actor, _dreamBatch);
                         _agent.TrainCriticOnly(_dreamBatch);
                     }
                     _dreamPhaseCount++;

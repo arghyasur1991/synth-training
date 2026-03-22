@@ -401,8 +401,8 @@ namespace Genesis.Sentience.Learning
             if (inferenceOnly)
             {
                 float[] infAction = deterministicInference
-                    ? _trainer.GetDeterministicAction(fullObs)
-                    : _trainer.GetAction(fullObs);
+                    ? InferDeterministicAction(fullObs)
+                    : InferAction(fullObs);
                 if (ContainsNaN(infAction))
                 {
                     Debug.LogWarning($"{Name}: NaN in inference action at decision {_totalDecisions}, zeroing.");
@@ -454,7 +454,7 @@ namespace Genesis.Sentience.Learning
             if (_totalDecisions < learningStarts)
                 rawAction = _trainer.GetRandomAction(_rng);
             else
-                rawAction = _trainer.GetAction(fullObs);
+                rawAction = InferAction(fullObs);
 
             if (ContainsNaN(rawAction))
             {
@@ -786,5 +786,15 @@ namespace Genesis.Sentience.Learning
 
         /// <summary>Override for skill-specific OnValidate logic.</summary>
         protected virtual void OnSkillValidate() { }
+
+        /// <summary>
+        /// Get a stochastic action from the trainer. Override to inject temporal context.
+        /// </summary>
+        protected virtual float[] InferAction(float[] fullObs) => _trainer.GetAction(fullObs);
+
+        /// <summary>
+        /// Get a deterministic action from the trainer. Override to inject temporal context.
+        /// </summary>
+        protected virtual float[] InferDeterministicAction(float[] fullObs) => _trainer.GetDeterministicAction(fullObs);
     }
 }

@@ -129,6 +129,7 @@ namespace Genesis.Sentience.Learning
     ///   - Pre-allocated CPU tensor for inference obs (bytes setter, no per-call wrapper)
     ///   - Cached Tensor[] and Dictionary to avoid hot-path allocations
     ///   - DisposeScope for intermediate tensor cleanup
+    ///   - Optional TemporalContextEncoder for history-conditioned policy
     /// </summary>
     public class SACAgent : IDisposable
     {
@@ -166,6 +167,16 @@ namespace Genesis.Sentience.Learning
         private float _lastActorLoss;
         private float _lastAlphaLoss;
 
+        // Temporal context encoder (null when ContextDim == 0)
+        private readonly TemporalContextEncoder _contextEncoder;
+        private TemporalContextEncoder _infContextA;
+        private TemporalContextEncoder _infContextB;
+        private TemporalContextEncoder _activeInfContext;
+        private readonly int _contextDim;
+        private readonly int _contextWarmupSteps;
+        private readonly int _contextSeqLen;
+        private readonly int _contextEntryDim; // obsDim + actDim + 1
+
         public float Alpha => (float)Math.Exp(_logAlpha.item<float>());
         public float LastQLoss => _lastQLoss;
         public float LastActorLoss => _lastActorLoss;
@@ -173,6 +184,8 @@ namespace Genesis.Sentience.Learning
         public int TrainSteps => _trainStep;
         public float TargetEntropy => _targetEntropy;
         public bool HasEncoder => Actor.LatentDim > 0;
+        public bool HasContext => _contextDim > 0;
+        public int ContextDim => _contextDim;
 
         public void SetTargetEntropy(int activeDims, float entropyScale)
         {
@@ -220,13 +233,21 @@ namespace Genesis.Sentience.Learning
             _qLr = config.QLr;
             _policyLr = config.PolicyLr;
 
-            Actor = new SACActorNetwork(obsDim, actDim, config.Hidden1, config.Hidden2,
+            _contextDim = config.ContextDim;
+            _contextWarmupSteps = config.ContextWarmupSteps;
+            _contextSeqLen = config.ContextSeqLen;
+            _contextEntryDim = obsDim + actDim + 1;
+
+            // When context is enabled, all networks see augmented observations
+            int netObsDim = _contextDim > 0 ? obsDim + _contextDim : obsDim;
+
+            Actor = new SACActorNetwork(netObsDim, actDim, config.Hidden1, config.Hidden2,
                 actionScale: config.ActionScale, latentDim: config.LatentDim,
                 encoderHidden: config.EncoderHidden);
-            QF1 = new SoftQNetwork(obsDim, actDim, config.Hidden1, config.Hidden2);
-            QF2 = new SoftQNetwork(obsDim, actDim, config.Hidden1, config.Hidden2);
-            QF1Target = new SoftQNetwork(obsDim, actDim, config.Hidden1, config.Hidden2);
-            QF2Target = new SoftQNetwork(obsDim, actDim, config.Hidden1, config.Hidden2);
+            QF1 = new SoftQNetwork(netObsDim, actDim, config.Hidden1, config.Hidden2);
+            QF2 = new SoftQNetwork(netObsDim, actDim, config.Hidden1, config.Hidden2);
+            QF1Target = new SoftQNetwork(netObsDim, actDim, config.Hidden1, config.Hidden2);
+            QF2Target = new SoftQNetwork(netObsDim, actDim, config.Hidden1, config.Hidden2);
 
             Actor.to(device);
             QF1.to(device);
@@ -237,26 +258,55 @@ namespace Genesis.Sentience.Learning
             CopyWeights(QF1, QF1Target);
             CopyWeights(QF2, QF2Target);
 
+            // Context encoder (when enabled)
+            if (_contextDim > 0)
+            {
+                _contextEncoder = new TemporalContextEncoder(
+                    _contextEntryDim, _contextDim, config.ContextSeqLen,
+                    config.ContextDModel, config.ContextNHeads, config.ContextNLayers,
+                    config.ContextFeedforward, config.ContextDropout);
+                _contextEncoder.to(device);
+            }
+
             float initAlpha = Math.Max(config.AlphaInit, config.AlphaMin);
             _logAlpha = new Parameter(torch.tensor((float)Math.Log(initAlpha), device: device).unsqueeze(0));
 
             _qOptimizer = optim.Adam(ConcatParams(QF1, QF2), lr: config.QLr);
-            _actorOptimizer = optim.Adam(Actor.parameters(), lr: config.PolicyLr);
+            _actorOptimizer = _contextEncoder != null
+                ? optim.Adam(ConcatParams(Actor, _contextEncoder), lr: config.PolicyLr)
+                : optim.Adam(Actor.parameters(), lr: config.PolicyLr);
             _alphaOptimizer = optim.Adam(new[] { _logAlpha }, lr: config.PolicyLr);
 
-            _inferenceActorA = new SACActorNetwork(obsDim, actDim, config.Hidden1, config.Hidden2,
+            _inferenceActorA = new SACActorNetwork(netObsDim, actDim, config.Hidden1, config.Hidden2,
                 actionScale: config.ActionScale, latentDim: config.LatentDim,
                 encoderHidden: config.EncoderHidden);
-            _inferenceActorB = new SACActorNetwork(obsDim, actDim, config.Hidden1, config.Hidden2,
+            _inferenceActorB = new SACActorNetwork(netObsDim, actDim, config.Hidden1, config.Hidden2,
                 actionScale: config.ActionScale, latentDim: config.LatentDim,
                 encoderHidden: config.EncoderHidden);
             _inferenceActorA.to(torch.CPU);
             _inferenceActorB.to(torch.CPU);
             _activeInferenceActor = _inferenceActorA;
+
+            if (_contextDim > 0)
+            {
+                _infContextA = new TemporalContextEncoder(
+                    _contextEntryDim, _contextDim, config.ContextSeqLen,
+                    config.ContextDModel, config.ContextNHeads, config.ContextNLayers,
+                    config.ContextFeedforward, config.ContextDropout);
+                _infContextB = new TemporalContextEncoder(
+                    _contextEntryDim, _contextDim, config.ContextSeqLen,
+                    config.ContextDModel, config.ContextNHeads, config.ContextNLayers,
+                    config.ContextFeedforward, config.ContextDropout);
+                _infContextA.to(torch.CPU);
+                _infContextB.to(torch.CPU);
+                _activeInfContext = _infContextA;
+            }
+
             SyncInferenceWeights();
 
             _actionBuffer = new float[actDim];
-            _infObsTensor = torch.zeros(1, obsDim, dtype: ScalarType.Float32);
+            // Inference tensor size: netObsDim (obs + context when enabled)
+            _infObsTensor = torch.zeros(1, netObsDim, dtype: ScalarType.Float32);
             _infObsBytes = obsDim * sizeof(float);
 
             _useCorrelatedNoise = config.CorrelatedNoise;
@@ -299,6 +349,74 @@ namespace Genesis.Sentience.Learning
                 _infObsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
                 var actor = Volatile.Read(ref _activeInferenceActor);
                 var (_, _, meanAction) = actor.forward(_infObsTensor);
+                CopyTensorToBuffer(meanAction, _actionBuffer);
+            }
+
+            return _actionBuffer;
+        }
+
+        /// <summary>
+        /// Get action with temporal context. historySeq: (seqLen, 1, entryDim),
+        /// historyMask: (1, seqLen) float tensor (1=padded).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float[] GetActionWithContext(float[] obs, Tensor historySeq, Tensor historyMask)
+        {
+            if (_contextDim <= 0) return GetAction(obs);
+
+            using var scope = NewDisposeScope();
+            using (no_grad())
+            {
+                var ctxEnc = Volatile.Read(ref _activeInfContext);
+                var boolMask = historyMask.to_type(ScalarType.Bool);
+                var context = ctxEnc.forward(historySeq, boolMask);
+
+                float gate = _contextWarmupSteps > 0
+                    ? Math.Min(1f, (float)_trainStep / _contextWarmupSteps)
+                    : 1f;
+                if (gate < 1f)
+                    context = context * gate;
+
+                // Build augmented obs: [obs | context]
+                var obsTensor = torch.zeros(1, ObsDim, dtype: ScalarType.Float32);
+                obsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
+                var augObs = torch.cat(new[] { obsTensor, context }, dim: 1);
+
+                var actor = Volatile.Read(ref _activeInferenceActor);
+                var (action, _, _) = actor.forward(augObs);
+                CopyTensorToBuffer(action, _actionBuffer);
+            }
+
+            return _actionBuffer;
+        }
+
+        /// <summary>
+        /// Get deterministic action with temporal context.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float[] GetDeterministicActionWithContext(float[] obs, Tensor historySeq, Tensor historyMask)
+        {
+            if (_contextDim <= 0) return GetDeterministicAction(obs);
+
+            using var scope = NewDisposeScope();
+            using (no_grad())
+            {
+                var ctxEnc = Volatile.Read(ref _activeInfContext);
+                var boolMask = historyMask.to_type(ScalarType.Bool);
+                var context = ctxEnc.forward(historySeq, boolMask);
+
+                float gate = _contextWarmupSteps > 0
+                    ? Math.Min(1f, (float)_trainStep / _contextWarmupSteps)
+                    : 1f;
+                if (gate < 1f)
+                    context = context * gate;
+
+                var obsTensor = torch.zeros(1, ObsDim, dtype: ScalarType.Float32);
+                obsTensor.bytes = MemoryMarshal.AsBytes<float>(obs.AsSpan());
+                var augObs = torch.cat(new[] { obsTensor, context }, dim: 1);
+
+                var actor = Volatile.Read(ref _activeInferenceActor);
+                var (_, _, meanAction) = actor.forward(augObs);
                 CopyTensorToBuffer(meanAction, _actionBuffer);
             }
 
@@ -497,6 +615,141 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
+        /// SAC training step with temporal context from history sequences.
+        /// The context encoder is trained end-to-end via the actor loss.
+        /// </summary>
+        public void TrainStep(SequenceBatch batch)
+        {
+            if (_contextEncoder == null)
+            {
+                // Fallback: create a regular Batch view and use the non-context path.
+                // This shouldn't normally happen (trainer selects the right path).
+                var simpleBatch = new Batch(batch.Size, batch.ObsDim, batch.ActDim);
+                Buffer.BlockCopy(batch.Obs, 0, simpleBatch.Obs, 0, batch.Obs.Length * sizeof(float));
+                Buffer.BlockCopy(batch.Actions, 0, simpleBatch.Actions, 0, batch.Actions.Length * sizeof(float));
+                Buffer.BlockCopy(batch.Rewards, 0, simpleBatch.Rewards, 0, batch.Rewards.Length * sizeof(float));
+                Buffer.BlockCopy(batch.NextObs, 0, simpleBatch.NextObs, 0, batch.NextObs.Length * sizeof(float));
+                Buffer.BlockCopy(batch.Dones, 0, simpleBatch.Dones, 0, batch.Dones.Length * sizeof(float));
+                Array.Copy(batch.Indices, simpleBatch.Indices, batch.Size);
+                Buffer.BlockCopy(batch.ISWeights, 0, simpleBatch.ISWeights, 0, batch.Size * sizeof(float));
+                TrainStep(simpleBatch);
+                Array.Copy(simpleBatch.TDErrors, batch.TDErrors, batch.Size);
+                return;
+            }
+
+            using var scope = NewDisposeScope();
+
+            var rawObs = torch.tensor(batch.Obs).reshape(batch.Size, batch.ObsDim).to(Device);
+            var actions = torch.tensor(batch.Actions).reshape(batch.Size, batch.ActDim).to(Device);
+            var rewards = torch.tensor(batch.Rewards).reshape(batch.Size, 1).to(Device);
+            var rawNextObs = torch.tensor(batch.NextObs).reshape(batch.Size, batch.ObsDim).to(Device);
+            var dones = torch.tensor(batch.Dones).reshape(batch.Size, 1).to(Device);
+            var isWeights = torch.tensor(batch.ISWeights).reshape(batch.Size, 1).to(Device);
+
+            // Build history tensor: reshape from flat (B*S*E) to (S, B, E) for transformer
+            var histFlat = torch.tensor(batch.HistoryData)
+                .reshape(batch.Size, batch.SeqLen, batch.EntryDim).to(Device);
+            var histSeq = histFlat.permute(1, 0, 2).contiguous(); // (seqLen, batch, entryDim)
+            var histMask = torch.tensor(batch.HistoryMask)
+                .reshape(batch.Size, batch.SeqLen).to_type(ScalarType.Bool).to(Device);
+
+            float gate = _contextWarmupSteps > 0
+                ? Math.Min(1f, (float)_trainStep / _contextWarmupSteps)
+                : 1f;
+
+            // Compute context WITHOUT gradient for critic update
+            Tensor contextDetached;
+            using (no_grad())
+            {
+                var ctx = _contextEncoder.forward(histSeq, histMask);
+                if (gate < 1f) ctx = ctx * gate;
+                contextDetached = ctx.detach();
+            }
+
+            var obs = torch.cat(new[] { rawObs, contextDetached }, dim: 1);
+            var nextObs = torch.cat(new[] { rawNextObs, contextDetached }, dim: 1);
+
+            float alpha = Alpha;
+
+            // --- Q-network update (context detached, no gradient through transformer) ---
+            {
+                Tensor nextQValue;
+                using (no_grad())
+                {
+                    var (nextAction, _, _) = Actor.forward(nextObs);
+                    if (_targetSmoothNoise > 0f)
+                    {
+                        var noise = (torch.randn_like(nextAction) * _targetSmoothNoise)
+                            .clamp(-_targetNoiseClip, _targetNoiseClip);
+                        nextAction = (nextAction + noise).clamp(-_actionScale, _actionScale);
+                    }
+                    var qf1NextTarget = QF1Target.forward(nextObs, nextAction);
+                    var qf2NextTarget = QF2Target.forward(nextObs, nextAction);
+                    var minQNext = torch.min(qf1NextTarget, qf2NextTarget);
+                    nextQValue = (rewards + _gamma * (1f - dones) * minQNext).clamp(-_maxQValue, _maxQValue);
+                }
+
+                var qf1Val = QF1.forward(obs, actions);
+                var qf2Val = QF2.forward(obs, actions);
+                var td1 = qf1Val - nextQValue;
+                var td2 = qf2Val - nextQValue;
+
+                using (no_grad())
+                {
+                    var absTD = torch.max(td1.detach().abs(), td2.detach().abs()).view(-1).cpu();
+                    var accessor = absTD.data<float>();
+                    for (int i = 0; i < batch.Size; i++)
+                        batch.TDErrors[i] = accessor[i];
+                }
+
+                var loss = (isWeights * (td1.pow(2) + td2.pow(2))).mean();
+                _qOptimizer.zero_grad();
+                loss.backward();
+                if (_qGradClipNorm > 0f)
+                    torch.nn.utils.clip_grad_norm_(ConcatParams(QF1, QF2), _qGradClipNorm);
+                _qOptimizer.step();
+                _lastQLoss = loss.item<float>();
+            }
+
+            // --- Actor and alpha update (context WITH gradient for transformer training) ---
+            _trainStep++;
+            if (_trainStep % _policyFrequency == 0)
+            {
+                var contextWithGrad = _contextEncoder.forward(histSeq, histMask);
+                if (gate < 1f) contextWithGrad = contextWithGrad * gate;
+                var augObsActor = torch.cat(new[] { rawObs, contextWithGrad }, dim: 1);
+
+                var (piAction, logPi, _) = Actor.forward(augObsActor);
+                var qf1Pi = QF1.forward(augObsActor, piAction);
+                var qf2Pi = QF2.forward(augObsActor, piAction);
+                var minQPi = torch.min(qf1Pi, qf2Pi);
+
+                var actorLoss = (alpha * logPi.unsqueeze(1) - minQPi).mean();
+                _actorOptimizer.zero_grad();
+                actorLoss.backward();
+                if (_actorGradClipNorm > 0f)
+                    torch.nn.utils.clip_grad_norm_(ConcatParams(Actor, _contextEncoder), _actorGradClipNorm);
+                _actorOptimizer.step();
+                _lastActorLoss = actorLoss.item<float>();
+
+                var alphaLoss = (-_logAlpha.exp() * (logPi.detach() + _targetEntropy)).mean();
+                _alphaOptimizer.zero_grad();
+                alphaLoss.backward();
+                _alphaOptimizer.step();
+                _lastAlphaLoss = alphaLoss.item<float>();
+
+                using (no_grad())
+                {
+                    if (_logAlpha.item<float>() < _logAlphaMin)
+                        _logAlpha.fill_(_logAlphaMin);
+                }
+            }
+
+            PolyakUpdate(QF1, QF1Target, _tau);
+            PolyakUpdate(QF2, QF2Target, _tau);
+        }
+
+        /// <summary>
         /// Copy training actor weights into the inactive inference actor,
         /// then atomically swap. GetAction() reads the active reference
         /// without any lock, so inference is never blocked.
@@ -522,6 +775,28 @@ namespace Genesis.Sentience.Learning
             }
 
             Interlocked.Exchange(ref _activeInferenceActor, staging);
+
+            // Sync context encoder inference copies
+            if (_contextEncoder != null && _infContextA != null)
+            {
+                var activeCtx = _activeInfContext;
+                var stagingCtx = (activeCtx == _infContextA) ? _infContextB : _infContextA;
+
+                _syncDict.Clear();
+                foreach (var (name, param) in stagingCtx.named_parameters())
+                    _syncDict[name] = param;
+
+                using (no_grad())
+                {
+                    foreach (var (name, param) in _contextEncoder.named_parameters())
+                    {
+                        if (_syncDict.TryGetValue(name, out var dst))
+                            dst.copy_(param.cpu());
+                    }
+                }
+
+                Interlocked.Exchange(ref _activeInfContext, stagingCtx);
+            }
         }
 
         private static void CopyWeights(Module src, Module dst)
@@ -565,6 +840,8 @@ namespace Genesis.Sentience.Learning
             QF1Target.save(Path.Combine(directory, "qf1_target.pt"));
             QF2Target.save(Path.Combine(directory, "qf2_target.pt"));
 
+            _contextEncoder?.save(Path.Combine(directory, "context_encoder.pt"));
+
             using var bw = new BinaryWriter(File.Create(Path.Combine(directory, "sac_state.bin")));
             bw.Write(_logAlpha.item<float>());
             bw.Write(_trainStep);
@@ -577,6 +854,13 @@ namespace Genesis.Sentience.Learning
             QF2.load(Path.Combine(directory, "qf2.pt"));
             QF1Target.load(Path.Combine(directory, "qf1_target.pt"));
             QF2Target.load(Path.Combine(directory, "qf2_target.pt"));
+
+            if (_contextEncoder != null)
+            {
+                var ctxPath = Path.Combine(directory, "context_encoder.pt");
+                if (File.Exists(ctxPath))
+                    _contextEncoder.load(ctxPath);
+            }
 
             var path = Path.Combine(directory, "sac_state.bin");
             if (File.Exists(path))
@@ -599,7 +883,9 @@ namespace Genesis.Sentience.Learning
             _alphaOptimizer?.Dispose();
 
             _qOptimizer = optim.Adam(ConcatParams(QF1, QF2), lr: _qLr);
-            _actorOptimizer = optim.Adam(Actor.parameters(), lr: _policyLr);
+            _actorOptimizer = _contextEncoder != null
+                ? optim.Adam(ConcatParams(Actor, _contextEncoder), lr: _policyLr)
+                : optim.Adam(Actor.parameters(), lr: _policyLr);
             _alphaOptimizer = optim.Adam(new[] { _logAlpha }, lr: _policyLr);
         }
 
@@ -612,6 +898,9 @@ namespace Genesis.Sentience.Learning
             QF2Target?.Dispose();
             _inferenceActorA?.Dispose();
             _inferenceActorB?.Dispose();
+            _contextEncoder?.Dispose();
+            _infContextA?.Dispose();
+            _infContextB?.Dispose();
             _logAlpha?.Dispose();
             _qOptimizer?.Dispose();
             _actorOptimizer?.Dispose();
@@ -714,6 +1003,35 @@ namespace Genesis.Sentience.Learning
 
         [UnityEngine.Tooltip("Encoder hidden layer size (only used when LatentDim > 0).")]
         public int EncoderHidden = 128;
+
+        [UnityEngine.Header("Temporal Context")]
+
+        [UnityEngine.Tooltip("Context vector dimension. 0 = disabled (reactive mode). " +
+            "When > 0, a transformer encodes recent history into a context " +
+            "vector prepended to observations for actor and critic.")]
+        public int ContextDim = 0;
+
+        [UnityEngine.Tooltip("History window length (number of past transitions).")]
+        public int ContextSeqLen = 64;
+
+        [UnityEngine.Tooltip("Transformer hidden dimension (d_model).")]
+        public int ContextDModel = 128;
+
+        [UnityEngine.Tooltip("Number of attention heads.")]
+        public int ContextNHeads = 4;
+
+        [UnityEngine.Tooltip("Number of transformer encoder layers.")]
+        public int ContextNLayers = 2;
+
+        [UnityEngine.Tooltip("Feedforward hidden size per encoder layer.")]
+        public int ContextFeedforward = 256;
+
+        [UnityEngine.Tooltip("Attention dropout (0 recommended for RL stability).")]
+        public float ContextDropout = 0f;
+
+        [UnityEngine.Tooltip("Steps before context reaches full strength. " +
+            "During warmup, context is scaled by min(1, step/warmup).")]
+        public int ContextWarmupSteps = 5000;
 
         [UnityEngine.Header("Dyna-Style Dreaming")]
 
