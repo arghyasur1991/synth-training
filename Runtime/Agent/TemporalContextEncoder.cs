@@ -51,8 +51,8 @@ namespace Genesis.Sentience.Learning
             //   Conv1(30->20, k=4, s=2): 16 -> 7
             //   Conv2(20->10, k=2, s=1): 7 -> 6
             // For other seqLen values the output length adapts automatically.
-            _conv1 = Conv1d(ch3, ch2, kernelSize: 4, stride: 2);
-            _conv2 = Conv1d(ch2, ch1, kernelSize: 2, stride: 1);
+            _conv1 = Conv1d(ch3, ch2, 4, stride: 2);
+            _conv2 = Conv1d(ch2, ch1, 2, stride: 1);
 
             // Compute flattened dimension after conv stack
             int afterConv1 = (seqLen - 4) / 2 + 1;
