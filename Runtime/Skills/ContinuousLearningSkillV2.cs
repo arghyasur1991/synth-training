@@ -458,34 +458,49 @@ namespace Genesis.Sentience.Learning
                 ("elbow",      -aScale),   // elbow extension (alternate naming)
             };
 
-            var logLines = new System.Collections.Generic.List<string>();
+            var matchedLines = new System.Collections.Generic.List<string>();
+            var unmatchedLines = new System.Collections.Generic.List<string>();
 
             for (int i = 0; i < _filter.actDim; i++)
             {
                 int mjIdx = _filter.includedActuatorIdx[i];
                 string name = ReadMjName(model, model->name_actuatoradr[mjIdx]);
-                if (string.IsNullOrEmpty(name)) continue;
+                if (string.IsNullOrEmpty(name))
+                {
+                    unmatchedLines.Add($"  [{i}] mjIdx={mjIdx} — NULL NAME");
+                    continue;
+                }
 
                 string lower = name.ToLowerInvariant();
 
-                // Only apply to X-axis actuators (sagittal plane)
                 bool isXAxis = lower.EndsWith("x") || lower.EndsWith("jointx");
 
-                if (!isXAxis) continue;
+                if (!isXAxis)
+                {
+                    unmatchedLines.Add($"  [{i}] {name} — not X-axis");
+                    continue;
+                }
 
+                bool matched = false;
                 foreach (var (keyword, xCtrl) in profileMap)
                 {
                     if (lower.Contains(keyword))
                     {
                         _guideAction[i] = xCtrl;
-                        logLines.Add($"  [{i}] {name} → ctrl={xCtrl:F2}");
+                        matchedLines.Add($"  [{i}] {name} → ctrl={xCtrl:F2}");
+                        matched = true;
                         break;
                     }
                 }
+                if (!matched)
+                    unmatchedLines.Add($"  [{i}] {name} — X-axis but no keyword match");
             }
 
             Debug.Log($"ContinuousLearningV2: ProneRecovery profile — " +
-                $"{logLines.Count} X-axis actuators assigned:\n{string.Join("\n", logLines)}");
+                $"{matchedLines.Count} MATCHED:\n{string.Join("\n", matchedLines)}");
+            if (unmatchedLines.Count > 0 && unmatchedLines.Count <= 30)
+                Debug.Log($"ContinuousLearningV2: ProneRecovery — " +
+                    $"{unmatchedLines.Count} unmatched:\n{string.Join("\n", unmatchedLines)}");
         }
 
         /// <summary>
@@ -510,6 +525,23 @@ namespace Genesis.Sentience.Learning
                 Buffer.BlockCopy(_guideAction, 0, rawAction, 0,
                     rawAction.Length * sizeof(float));
                 _lastStepWasGuided = true;
+
+                if (_guideDecisionCount <= 5 || _guideDecisionCount % 500 == 0)
+                {
+                    float actMax = 0f, actSum = 0f;
+                    int nz = 0;
+                    for (int i = 0; i < rawAction.Length; i++)
+                    {
+                        float a = Mathf.Abs(rawAction[i]);
+                        if (a > actMax) actMax = a;
+                        actSum += a;
+                        if (a > 1e-6f) nz++;
+                    }
+                    Debug.Log($"ContinuousLearningV2: GUIDE applied d={_guideDecisionCount} " +
+                        $"|max|={actMax:F4} sum={actSum:F3} nonZero={nz}/{rawAction.Length} " +
+                        $"first5=[{rawAction[0]:F3},{rawAction[1]:F3},{rawAction[2]:F3}," +
+                        $"{rawAction[3]:F3},{rawAction[4]:F3}]");
+                }
             }
             else
             {
