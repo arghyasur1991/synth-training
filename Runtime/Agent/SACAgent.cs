@@ -916,7 +916,6 @@ namespace Genesis.Sentience.Learning
         public float Gamma = 0.99f;
         public float Tau = 0.005f;
         public int BatchSize = 512;
-        public int LearningStarts = 5000;
         public float PolicyLr = 3e-4f;
         public float QLr = 3e-4f;
         public int PolicyFrequency = 2;
