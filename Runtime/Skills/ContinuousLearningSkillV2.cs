@@ -320,6 +320,34 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
+        /// Resolve a bone name (extracted from actuator name) to its canonical name
+        /// using SynthBoneCatalog's fallback name patterns.
+        /// 1. Exact match against catalog patterns (handles Daz lShldrBend, Mixamo LeftUpperArm, etc.)
+        /// 2. Substring match for intermediate bones (abdomenLower → contains "abdomen" → Spine)
+        /// Returns null if no match found.
+        /// </summary>
+        private static string ResolveCanonicalBoneName(
+            string boneName,
+            Dictionary<string, string> patternToCanonical)
+        {
+            if (string.IsNullOrEmpty(boneName)) return null;
+
+            // Exact match first
+            if (patternToCanonical.TryGetValue(boneName, out var exact))
+                return exact;
+
+            // Substring: check if boneName contains any catalog pattern.
+            // Handles intermediates like "abdomenLower" containing pattern "abdomen" → Spine
+            foreach (var kvp in patternToCanonical)
+            {
+                if (boneName.IndexOf(kvp.Key, System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    return kvp.Value;
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// Discover upper-body MuJoCo body indices and initialize OU drag state.
         /// </summary>
         private unsafe void InitDragForce(MujocoLib.mjModel_* model, MujocoLib.mjData_* data, int nbody)
@@ -430,35 +458,45 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
-        /// Prone recovery profile: maximum extension torque on sagittal-plane joints.
-        /// Spine/chest/pelvis/hips X → negative ctrl (back extension, arching).
-        /// UpperLeg X → negative ctrl (hip extension, pushing pelvis up).
-        /// LowerLeg X → negative ctrl (knee extension, straightening legs).
-        /// UpperArm X → positive ctrl (shoulder flexion, pushing off ground).
+        /// Prone recovery profile: maximum extension torque on sagittal-plane (X) joints.
+        /// Uses SynthBoneCatalog to resolve actuator names to canonical bone names,
+        /// making this work across Daz, Mixamo, Unreal, and other humanoid models.
         /// </summary>
         private unsafe void BuildProneRecoveryProfile(MujocoLib.mjModel_* model)
         {
             float aScale = sacConfig.ActionScale;
 
-            // keyword → (X ctrl sign, axis filter). Only X-axis matters for sagittal recovery.
-            var profileMap = new (string keyword, float xCtrl)[]
+            // Canonical bone name → X-axis torque direction for prone recovery
+            var canonicalProfile = new Dictionary<string, float>(System.StringComparer.OrdinalIgnoreCase)
             {
-                ("spine",       aScale),   // back extension (arch)
-                ("chest",       aScale),   // back extension
-                ("abdomen",     aScale),   // back extension
-                ("pelvis",      aScale),   // back extension
-                ("neck",        aScale),   // head up / back
-                ("thigh",       aScale),   // hip extension (straighten legs back)
-                ("shin",        aScale),   // knee extension (straighten legs)
-                ("hip",         aScale),   // hip extension (alternate naming)
-                ("knee",        aScale),   // knee extension (alternate naming)
-                ("shldr",      -aScale),   // shoulder extension (push off ground) [Daz name]
-                ("shoulder",   -aScale),   // shoulder extension (generic name)
-                ("forearm",     aScale),   // elbow extension [Daz name]
-                ("upperarm",   -aScale),   // push down/back
-                ("lowerarm",    aScale),   // elbow extension (generic)
-                ("elbow",       aScale),   // elbow extension (alternate naming)
+                ["Spine"]      =  aScale,  // back extension (arch)
+                ["Chest"]      =  aScale,
+                ["UpperChest"] =  aScale,
+                ["Neck"]       =  aScale,  // head up / back
+                ["Head"]       =  aScale,
+                ["Hips"]       =  aScale,  // pelvis extension
+                ["UpperLeg"]   =  aScale,  // hip extension
+                ["LowerLeg"]   =  aScale,  // knee extension
+                ["Shoulder"]   = -aScale,  // push off ground
+                ["UpperArm"]   = -aScale,  // push off ground
+                ["LowerArm"]   =  aScale,  // elbow extension
+                ["Foot"]       =  aScale,  // ankle extension (plantarflex)
             };
+
+            // Build reverse lookup: bone name pattern → canonical name from catalog.
+            // Covers Daz (lShldrBend), Mixamo (LeftUpperArm), Unreal (l_upperarm), etc.
+            var patternToCanonical = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
+            foreach (var kvp in SynthBoneCatalog.All)
+            {
+                var info = kvp.Value;
+                if (string.IsNullOrEmpty(info.CanonicalName) || info.FallbackNamePatterns == null)
+                    continue;
+                foreach (var pattern in info.FallbackNamePatterns)
+                {
+                    if (!patternToCanonical.ContainsKey(pattern))
+                        patternToCanonical[pattern] = info.CanonicalName;
+                }
+            }
 
             var matchedLines = new System.Collections.Generic.List<string>();
             var unmatchedLines = new System.Collections.Generic.List<string>();
@@ -466,46 +504,44 @@ namespace Genesis.Sentience.Learning
             for (int i = 0; i < _filter.actDim; i++)
             {
                 int mjIdx = _filter.includedActuatorIdx[i];
-                string name = ReadMjName(model, model->name_actuatoradr[mjIdx]);
-                if (string.IsNullOrEmpty(name))
+                string actuatorName = ReadMjName(model, model->name_actuatoradr[mjIdx]);
+                if (string.IsNullOrEmpty(actuatorName))
                 {
                     unmatchedLines.Add($"  [{i}] mjIdx={mjIdx} — NULL NAME");
                     continue;
                 }
 
-                string lower = name.ToLowerInvariant();
-
-                bool isXAxis = lower.Contains("jointx");
-
-                if (!isXAxis)
+                if (!actuatorName.ToLowerInvariant().Contains("jointx"))
                 {
-                    unmatchedLines.Add($"  [{i}] {name} — not X-axis");
+                    unmatchedLines.Add($"  [{i}] {actuatorName} — not X-axis");
                     continue;
                 }
 
-                bool matched = false;
-                foreach (var (keyword, xCtrl) in profileMap)
+                // Extract bone name: "lShldrBendJointX_651" → "lShldrBend"
+                int jointIdx = actuatorName.IndexOf("Joint", System.StringComparison.Ordinal);
+                string boneName = jointIdx > 0 ? actuatorName.Substring(0, jointIdx) : actuatorName;
+
+                // Resolve canonical name via catalog patterns
+                string canonical = ResolveCanonicalBoneName(boneName, patternToCanonical);
+
+                if (canonical != null && canonicalProfile.TryGetValue(canonical, out float xCtrl))
                 {
-                    if (lower.Contains(keyword))
-                    {
-                        _guideAction[i] = xCtrl;
-                        matchedLines.Add($"  [{i}] {name} → ctrl={xCtrl:F2}");
-                        matched = true;
-                        break;
-                    }
+                    _guideAction[i] = xCtrl;
+                    matchedLines.Add($"  [{i}] {actuatorName} → bone={boneName} → {canonical} → ctrl={xCtrl:F2}");
                 }
-                if (!matched)
-                    unmatchedLines.Add($"  [{i}] {name} — X-axis but no keyword match");
+                else
+                {
+                    unmatchedLines.Add($"  [{i}] {actuatorName} → bone={boneName} → {canonical ?? "?"} — no profile");
+                }
             }
 
             Debug.Log($"ContinuousLearningV2: ProneRecovery profile — " +
                 $"{matchedLines.Count} MATCHED:\n{string.Join("\n", matchedLines)}");
 
-            // Always log a sample of unmatched so we can see actual naming convention
-            int showUnmatched = Mathf.Min(unmatchedLines.Count, 50);
+            int showUnmatched = Mathf.Min(unmatchedLines.Count, 30);
             if (showUnmatched > 0)
                 Debug.Log($"ContinuousLearningV2: ProneRecovery — " +
-                    $"{unmatchedLines.Count} unmatched (showing first {showUnmatched}):\n" +
+                    $"{unmatchedLines.Count} unmatched (first {showUnmatched}):\n" +
                     $"{string.Join("\n", unmatchedLines.GetRange(0, showUnmatched))}");
         }
 
