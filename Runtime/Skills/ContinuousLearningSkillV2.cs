@@ -577,7 +577,10 @@ namespace Genesis.Sentience.Learning
                 }
 
                 for (int i = 0; i < rawAction.Length; i++)
-                    rawAction[i] = _guideAction[i] * strength;
+                {
+                    if (_guideAction[i] != 0f)
+                        rawAction[i] = _guideAction[i] * strength;
+                }
 
                 _lastStepWasGuided = true;
 
