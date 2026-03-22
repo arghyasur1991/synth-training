@@ -1056,15 +1056,15 @@ namespace Genesis.Sentience.Learning
             "experience standing states early in training.")]
         public bool DragForceEnabled = false;
 
-        [UnityEngine.Tooltip("Base upward force in Newtons (body weight ~400N, 200 = ~0.5x). " +
+        [UnityEngine.Tooltip("Base upward force in Newtons during assist phase. " +
             "Actual magnitude drifts via OU process between DragForceMin and DragForceMax.")]
-        public float DragForceNewtons = 200f;
+        public float DragForceNewtons = 2000f;
 
         [UnityEngine.Tooltip("Minimum drag force (Newtons) for OU drift range.")]
         public float DragForceMin = 50f;
 
         [UnityEngine.Tooltip("Maximum drag force (Newtons) for OU drift range.")]
-        public float DragForceMax = 400f;
+        public float DragForceMax = 3000f;
 
         [UnityEngine.Tooltip("OU mean-reversion rate (higher = faster return to DragForceNewtons).")]
         public float DragForceOUTheta = 0.01f;
@@ -1079,6 +1079,17 @@ namespace Genesis.Sentience.Learning
             "(chest, spine, shoulders, head). 1.0 = full base magnitude per bone.")]
         [UnityEngine.Range(0f, 1f)]
         public float DragUpperBodyFraction = 0.5f;
+
+        [UnityEngine.Tooltip("Decision steps of assisted (high force) phase per cycle.")]
+        public int DragAssistOnSteps = 2000;
+
+        [UnityEngine.Tooltip("Decision steps of free (minimal force) phase per cycle. " +
+            "Agent must learn to maintain posture without assist.")]
+        public int DragAssistOffSteps = 5000;
+
+        [UnityEngine.Tooltip("Force used during the free (off) phase. " +
+            "Set to 0 for fully unassisted, or a small value for gentle nudge.")]
+        public float DragOffForceNewtons = 50f;
 
         [UnityEngine.Header("Dyna-Style Dreaming")]
 
