@@ -69,9 +69,6 @@ namespace Genesis.Sentience.Learning
         private HistoryRingBuffer _historyBuffer;
         private Tensor _historyTensor;  // preallocated (seqLen, 1, entryDim)
         private Tensor _historyMask;    // preallocated (1, seqLen) float
-        private float _lastScaledReward;
-        private float[] _historyObsCopy;   // scratch copy to avoid aliasing _normalizedObs
-        private float[] _historyActCopy;   // scratch copy for action
 
         // ── Diagnostics ─────────────────────────────────────────────────
         public float RawReward => _reward?.LastRawReward ?? 0f;
@@ -146,8 +143,6 @@ namespace Genesis.Sentience.Learning
                     dtype: TorchSharp.torch.ScalarType.Float32);
                 _historyMask = torch.zeros(1, sacConfig.ContextSeqLen,
                     dtype: TorchSharp.torch.ScalarType.Float32);
-                _historyObsCopy = new float[obsDim];
-                _historyActCopy = new float[actDim];
             }
 
             Debug.Log($"ContinuousLearningV2: Initialized — " +
@@ -231,11 +226,7 @@ namespace Genesis.Sentience.Learning
             _historyBuffer.PackIntoTensor(_historyTensor);
             _historyBuffer.WritePaddingMask(_historyMask);
 
-            var sacTrainer = SACTrainer;
-            var action = sacTrainer.GetActionWithContext(fullObs, _historyTensor, _historyMask);
-
-            PushToHistory(fullObs, action);
-            return action;
+            return SACTrainer.GetActionWithContext(fullObs, _historyTensor, _historyMask);
         }
 
         protected override float[] InferDeterministicAction(float[] fullObs)
@@ -246,16 +237,17 @@ namespace Genesis.Sentience.Learning
             _historyBuffer.PackIntoTensor(_historyTensor);
             _historyBuffer.WritePaddingMask(_historyMask);
 
-            var sacTrainer = SACTrainer;
-            var action = sacTrainer.GetDeterministicActionWithContext(fullObs, _historyTensor, _historyMask);
-
-            PushToHistory(fullObs, action);
-            return action;
+            return SACTrainer.GetDeterministicActionWithContext(fullObs, _historyTensor, _historyMask);
         }
 
         protected override void OnTransitionStored(float reward, bool done)
         {
-            _lastScaledReward = reward * rewardScale;
+            // Push the previous transition into the history buffer. _prevObs and
+            // _prevAction are safe copies (Buffer.BlockCopy'd in BaseTrainingSkill),
+            // so no aliasing issues. This runs during both random and policy actions,
+            // ensuring the history buffer is populated before policy inference begins.
+            if (_historyBuffer != null)
+                _historyBuffer.Push(_prevObs, _prevAction, reward * rewardScale);
 
             if (_metrics != null)
             {
@@ -270,21 +262,6 @@ namespace Genesis.Sentience.Learning
                     _trainer?.ExperienceCount ?? 0,
                     SACTrainer?.LastWorldModelLoss ?? 0f);
             }
-        }
-
-        /// <summary>
-        /// Push (obs, action, reward) into the history ring buffer immediately
-        /// after inference. Uses the previous step's reward since the current
-        /// step's reward isn't available yet. Copies data to avoid aliasing
-        /// _normalizedObs which is overwritten each step.
-        /// </summary>
-        private void PushToHistory(float[] obs, float[] action)
-        {
-            if (_historyBuffer == null) return;
-
-            Buffer.BlockCopy(obs, 0, _historyObsCopy, 0, obs.Length * sizeof(float));
-            Buffer.BlockCopy(action, 0, _historyActCopy, 0, action.Length * sizeof(float));
-            _historyBuffer.Push(_historyObsCopy, _historyActCopy, _lastScaledReward);
         }
 
         // ── Reference Motion Indexing (reused from V1) ──────────────────

@@ -85,6 +85,26 @@ namespace Genesis.Sentience.Learning
         /// <returns>Context vector, shape: (batch, contextDim)</returns>
         public override Tensor forward(Tensor sequence, Tensor paddingMask)
         {
+            // All-padded safety: if every position is masked, the attention
+            // softmax produces NaN (softmax of all -inf). Return zeros instead.
+            if (paddingMask is not null && paddingMask.numel() > 0)
+            {
+                bool allPadded;
+                using (no_grad())
+                {
+                    allPadded = paddingMask.any().item<bool>();
+                    // Check if ALL are true (padded) — sum == numel
+                    long numTrue = paddingMask.sum().to_type(ScalarType.Int64).item<long>();
+                    allPadded = numTrue == paddingMask.numel();
+                }
+                if (allPadded)
+                {
+                    int batch = (int)sequence.shape[1];
+                    return torch.zeros(batch, _contextDim, dtype: sequence.dtype,
+                        device: sequence.device);
+                }
+            }
+
             var projected = _inputProj.forward(sequence);
 
             int actualSeq = (int)projected.shape[0];
