@@ -453,6 +453,7 @@ namespace Genesis.Sentience.Learning
 
             Debug.Log($"ContinuousLearningV2: Action guide [{sacConfig.ActionGuideProfile}] — " +
                 $"actDim={_filter.actDim}, nonZero={nonZero}, |max|={absMax:F4}, " +
+                $"strength={sacConfig.ActionGuideStrength:F2}, osc={sacConfig.ActionGuideOscillationHz:F1}Hz, " +
                 $"prob={sacConfig.ActionGuideProb:F2}→{sacConfig.ActionGuideProbFloor:F2} " +
                 $"over {sacConfig.ActionGuideTaperSteps} steps");
         }
@@ -464,23 +465,26 @@ namespace Genesis.Sentience.Learning
         /// </summary>
         private unsafe void BuildProneRecoveryProfile(MujocoLib.mjModel_* model)
         {
-            float aScale = sacConfig.ActionScale;
+            // Store normalized direction (±1). Actual magnitude is applied at runtime
+            // via ActionGuideStrength × ActionScale × oscillation.
+            float d = sacConfig.ActionScale;
 
-            // Canonical bone name → X-axis torque direction for prone recovery
+            // Canonical bone name → X-axis torque DIRECTION for prone recovery.
+            // Positive = extension direction for this model (empirically validated).
             var canonicalProfile = new Dictionary<string, float>(System.StringComparer.OrdinalIgnoreCase)
             {
-                ["Spine"]      =  aScale,  // back extension (arch)
-                ["Chest"]      =  aScale,
-                ["UpperChest"] =  aScale,
-                ["Neck"]       =  aScale,  // head up / back
-                ["Head"]       =  aScale,
-                ["Hips"]       =  aScale,  // pelvis extension
-                ["UpperLeg"]   =  aScale,  // hip extension
-                ["LowerLeg"]   =  aScale,  // knee extension
-                ["Shoulder"]   = -aScale,  // push off ground
-                ["UpperArm"]   = -aScale,  // push off ground
-                ["LowerArm"]   =  aScale,  // elbow extension
-                ["Foot"]       =  aScale,  // ankle extension (plantarflex)
+                ["Spine"]      =  d,  // back extension (arch)
+                ["Chest"]      =  d,
+                ["UpperChest"] =  d,
+                ["Neck"]       =  d,  // head up / back
+                ["Head"]       =  d,
+                ["Hips"]       =  d,  // pelvis extension
+                ["UpperLeg"]   =  d,  // hip extension
+                ["LowerLeg"]   =  d,  // knee extension
+                ["Shoulder"]   = -d,  // push off ground
+                ["UpperArm"]   = -d,  // push off ground
+                ["LowerArm"]   =  d,  // elbow extension
+                ["Foot"]       =  d,  // ankle extension (plantarflex)
             };
 
             // Build reverse lookup: bone name pattern → canonical name from catalog.
@@ -564,8 +568,17 @@ namespace Genesis.Sentience.Learning
 
             if (_guideRng.NextDouble() < prob)
             {
-                Buffer.BlockCopy(_guideAction, 0, rawAction, 0,
-                    rawAction.Length * sizeof(float));
+                float strength = sacConfig.ActionGuideStrength;
+                if (sacConfig.ActionGuideOscillationHz > 0f)
+                {
+                    float secs = _guideDecisionCount * Time.fixedDeltaTime;
+                    float osc = Mathf.Sin(2f * Mathf.PI * sacConfig.ActionGuideOscillationHz * secs);
+                    strength *= 0.5f + 0.5f * osc; // modulate between 0 and full strength
+                }
+
+                for (int i = 0; i < rawAction.Length; i++)
+                    rawAction[i] = _guideAction[i] * strength;
+
                 _lastStepWasGuided = true;
 
                 if (_guideDecisionCount <= 5 || _guideDecisionCount % 500 == 0)
@@ -580,9 +593,8 @@ namespace Genesis.Sentience.Learning
                         if (a > 1e-6f) nz++;
                     }
                     Debug.Log($"ContinuousLearningV2: GUIDE applied d={_guideDecisionCount} " +
-                        $"|max|={actMax:F4} sum={actSum:F3} nonZero={nz}/{rawAction.Length} " +
-                        $"first5=[{rawAction[0]:F3},{rawAction[1]:F3},{rawAction[2]:F3}," +
-                        $"{rawAction[3]:F3},{rawAction[4]:F3}]");
+                        $"str={strength:F3} |max|={actMax:F4} sum={actSum:F3} " +
+                        $"nonZero={nz}/{rawAction.Length}");
                 }
             }
             else

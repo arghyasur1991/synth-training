@@ -1110,6 +1110,15 @@ namespace Genesis.Sentience.Learning
             "ActionGuideProb to ActionGuideProbFloor.")]
         public int ActionGuideTaperSteps = 100000;
 
+        [UnityEngine.Tooltip("Multiplier on guide torques (1 = full ActionScale, 0.3 = gentle).")]
+        [UnityEngine.Range(0.05f, 2f)]
+        public float ActionGuideStrength = 0.5f;
+
+        [UnityEngine.Tooltip("Oscillation frequency in Hz. Guide torques are modulated by a sine " +
+            "wave so joints rhythmically extend/relax instead of slamming to limits. 0 = static.")]
+        [UnityEngine.Range(0f, 5f)]
+        public float ActionGuideOscillationHz = 0.5f;
+
         [UnityEngine.Header("Dyna-Style Dreaming")]
 
         [UnityEngine.Tooltip("Enable world-model dreaming: train a forward model on real transitions, " +
