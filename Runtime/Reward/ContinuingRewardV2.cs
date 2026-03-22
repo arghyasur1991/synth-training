@@ -63,6 +63,8 @@ namespace Genesis.Sentience.Learning
         private const int CENTERING_WARMUP = 10000;
 
         private readonly float _standingZ;
+        private readonly float _standingHeadZ;
+        private readonly int _headBodyIdx;
         private readonly int[] _includedQposIdx;
 
         // Reference frame data (same format as V1)
@@ -94,9 +96,14 @@ namespace Genesis.Sentience.Learning
         public int NumReferenceFrames => _numReferenceFrames;
         public int ReferenceNq => _refNq;
 
-        public ContinuingRewardV2(float standingZ, int[] includedQposIdx)
+        /// <param name="headBodyIdx">MuJoCo body index for the head. -1 to disable head height.</param>
+        /// <param name="standingHeadZ">Head Z when standing (from data->xpos at init).</param>
+        public ContinuingRewardV2(float standingZ, int[] includedQposIdx,
+            int headBodyIdx = -1, float standingHeadZ = 0f)
         {
             _standingZ = standingZ;
+            _headBodyIdx = headBodyIdx;
+            _standingHeadZ = standingHeadZ > 0f ? standingHeadZ : standingZ;
             _includedQposIdx = includedQposIdx ?? Array.Empty<int>();
             _refQposFlat = Array.Empty<double>();
         }
@@ -129,11 +136,19 @@ namespace Genesis.Sentience.Learning
             float vz = (float)pQvel[2];
 
             // --- Term 1: Height (merges old height + recovery + velocity_up) ---
-            // Below standing: linear ramp + velocity bonus gives gradient to push up.
-            // At/above standing: gaussian peak rewards maintaining height.
-            float heightFraction = Mathf.Clamp01(rootZ / _standingZ);
+            // Blends root (torso) and head heights so the agent learns to pull
+            // its head up, not just raise the torso. 60% root, 40% head.
+            float rootFraction = Mathf.Clamp01(rootZ / _standingZ);
+            float headFraction = rootFraction;
+            if (_headBodyIdx > 0)
+            {
+                float headZ = (float)data->xpos[_headBodyIdx * 3 + 2];
+                headFraction = Mathf.Clamp01(headZ / _standingHeadZ);
+            }
+            float heightFraction = 0.6f * rootFraction + 0.4f * headFraction;
+
             float rHeight;
-            if (rootZ < _standingZ)
+            if (heightFraction < 1f)
             {
                 float velBonus = Mathf.Clamp01(vz * 2f) * (1f - heightFraction);
                 rHeight = heightFraction + 0.3f * velBonus;

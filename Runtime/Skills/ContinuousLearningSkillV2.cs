@@ -72,6 +72,8 @@ namespace Genesis.Sentience.Learning
 
         // Drag force state
         private float _standingZ;
+        private float _standingHeadZ;
+        private int _headBodyIdx = -1;
         private long _dragDecisionCount;
 
         // ── Diagnostics ─────────────────────────────────────────────────
@@ -115,11 +117,19 @@ namespace Genesis.Sentience.Learning
             float standingZ = (float)MjScene.Instance.Data->qpos[2];
             _standingZ = standingZ;
 
-            _reward = new ContinuingRewardV2(standingZ, _filter.includedQposIdx);
+            var mjModel = MjScene.Instance.Model;
+            var mjData = MjScene.Instance.Data;
+            int nb = (int)mjModel->nbody;
+
+            _headBodyIdx = FindBodyByName(mjModel, nb, "head");
+            _standingHeadZ = _headBodyIdx > 0
+                ? (float)mjData->xpos[_headBodyIdx * 3 + 2]
+                : standingZ;
+
+            _reward = new ContinuingRewardV2(standingZ, _filter.includedQposIdx,
+                _headBodyIdx, _standingHeadZ);
             _reward.SetNearestFrameInterval(nearestFrameInterval);
 
-            var mjModel = MjScene.Instance.Model;
-            int nb = (int)mjModel->nbody;
             double totalMass = 0;
             for (int i = 0; i < nb; i++)
                 totalMass += mjModel->body_mass[i];
@@ -155,6 +165,7 @@ namespace Genesis.Sentience.Learning
 
             Debug.Log($"ContinuousLearningV2: Initialized — " +
                 $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim})" +
+                $", head={(_headBodyIdx > 0 ? $"body{_headBodyIdx} (standZ={_standingHeadZ:F3})" : "NOT FOUND")}" +
                 (sacConfig.ContextDim > 0 ? $", context={sacConfig.ContextDim}, seqLen={sacConfig.ContextSeqLen}" : "") +
                 (sacConfig.DragForceEnabled ? $", drag={sacConfig.DragForceNewtons}N (warmup={sacConfig.DragForceWarmupSteps})" : "") +
                 (sacConfig.PerJointOUSigmaEnabled ? ", perJointOU=ON" : "") +
@@ -242,6 +253,25 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
+        /// Find a MuJoCo body index by searching for a substring in body names.
+        /// Returns -1 if no match found.
+        /// </summary>
+        private static unsafe int FindBodyByName(MujocoLib.mjModel_* model, int nbody, string keyword)
+        {
+            string lower = keyword.ToLowerInvariant();
+            for (int i = 1; i < nbody; i++)
+            {
+                int nameAdr = model->name_bodyadr[i];
+                byte* basePtr = (byte*)model->names;
+                string name = System.Runtime.InteropServices.Marshal.PtrToStringAnsi(
+                    (IntPtr)(basePtr + nameAdr));
+                if (!string.IsNullOrEmpty(name) && name.ToLowerInvariant().Contains(lower))
+                    return i;
+            }
+            return -1;
+        }
+
+        /// <summary>
         /// Read a null-terminated name string from model->names at the given byte offset.
         /// Safe alternative to MujocoLib.mj_id2name whose [return: MarshalAs(LPStr)]
         /// causes the marshaller to free MuJoCo's internal pointer, crashing Unity.
@@ -258,9 +288,10 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
-        /// Apply upward force to the root body (body 1 = torso) via xfrc_applied.
+        /// Apply upward force to root body and head via xfrc_applied.
         /// Force scales inversely with height (strongest when fallen) and ramps up
-        /// over warmup steps. Same xfrc_applied pattern as PlayerHandBodies.
+        /// over warmup steps. Forces are in world frame — +Z is always up regardless
+        /// of body orientation, so this works for both prone and supine poses.
         /// </summary>
         private unsafe void ApplyDragForce(MujocoLib.mjData_* data)
         {
@@ -269,11 +300,19 @@ namespace Genesis.Sentience.Learning
             float warmup = Mathf.Clamp01((float)_dragDecisionCount / sacConfig.DragForceWarmupSteps);
             float rootZ = (float)data->qpos[2];
             float heightGate = Mathf.Max(0f, 1f - rootZ / _standingZ);
-            float force = sacConfig.DragForceNewtons * heightGate * warmup;
+            float rootForce = sacConfig.DragForceNewtons * heightGate * warmup;
 
             // xfrc_applied is (nbody, 6): [fx, fy, fz, tx, ty, tz] per body.
-            // Body 1 is the root/torso. Apply force on z-axis (index 2).
-            data->xfrc_applied[1 * 6 + 2] = force;
+            // Forces are world-frame: +Z = up regardless of body orientation.
+            data->xfrc_applied[1 * 6 + 2] = rootForce;
+
+            if (_headBodyIdx > 0)
+            {
+                float headZ = (float)data->xpos[_headBodyIdx * 3 + 2];
+                float headGate = Mathf.Max(0f, 1f - headZ / _standingHeadZ);
+                float headForce = sacConfig.DragForceNewtons * 0.3f * headGate * warmup;
+                data->xfrc_applied[_headBodyIdx * 6 + 2] = headForce;
+            }
         }
 
         protected override void SaveExtraState(string directory)
