@@ -207,7 +207,10 @@ namespace Genesis.Sentience.Learning
             for (int i = 0; i < actDim; i++)
             {
                 int mjIdx = indices[i];
-                string actuatorName = MujocoLib.mj_id2name(model, (int)MujocoLib.mjtObj.mjOBJ_ACTUATOR, mjIdx);
+                // Read actuator name directly from model->names buffer.
+                // Cannot use MujocoLib.mj_id2name — its [return: MarshalAs(LPStr)]
+                // causes the marshaller to free MuJoCo's internal name pointer, crashing Unity.
+                string actuatorName = ReadMjName(model, model->name_actuatoradr[mjIdx]);
 
                 float sigma = sacConfig.OUSigmaDefault;
                 if (!string.IsNullOrEmpty(actuatorName))
@@ -236,6 +239,22 @@ namespace Genesis.Sentience.Learning
             }
             Debug.Log($"ContinuousLearningV2: Per-joint OU sigma built — " +
                 $"{matched}/{actDim} matched keywords, range=[{minS:F2}, {maxS:F2}]");
+        }
+
+        /// <summary>
+        /// Read a null-terminated name string from model->names at the given byte offset.
+        /// Safe alternative to MujocoLib.mj_id2name whose [return: MarshalAs(LPStr)]
+        /// causes the marshaller to free MuJoCo's internal pointer, crashing Unity.
+        /// Note: model->names is declared as char* in C# bindings but MuJoCo stores
+        /// single-byte ASCII, so we cast to IntPtr and use PtrToStringAnsi.
+        /// </summary>
+        private static unsafe string ReadMjName(MujocoLib.mjModel_* model, int nameAdr)
+        {
+            if (nameAdr < 0 || model->names == null) return null;
+            // Cast to byte* first: model->names is char* (2-byte in C#) but MuJoCo
+            // stores single-byte ASCII and nameAdr is a byte offset.
+            byte* basePtr = (byte*)model->names;
+            return System.Runtime.InteropServices.Marshal.PtrToStringAnsi((IntPtr)(basePtr + nameAdr));
         }
 
         /// <summary>
