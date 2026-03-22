@@ -288,24 +288,19 @@ namespace Genesis.Sentience.Learning.EditorTools
                 if (m.DragForce.Count > 0)
                 {
                     var v2s = (ContinuousLearningSkillV2)_skill;
-                    string phase = v2s.DragAssistActive ? "ASSIST" : "FREE";
+                    float taper = v2s.DragTaperProgress;
                     if (_foldDragForce = EditorGUILayout.Foldout(_foldDragForce,
-                        $"Drag Force — {phase} ({v2s.CurrentDragForce:F0}N)", true, EditorStyles.foldoutHeader))
+                        $"Drag Force — {v2s.CurrentDragForce:F0}N (taper {taper:P0})", true, EditorStyles.foldoutHeader))
                     {
                         DrawGraph(120, window,
                             (m.DragForce, C_DRAG, "DragN"));
 
                         var cfg = v2s.sacConfig;
                         EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
-                        var oldBg = GUI.backgroundColor;
-                        GUI.backgroundColor = v2s.DragAssistActive
-                            ? new Color(1f, 0.6f, 0f, 0.3f) : new Color(0.3f, 0.9f, 0.3f, 0.3f);
-                        Lbl(v2s.DragAssistActive ? "ASSIST" : "FREE", 50);
-                        GUI.backgroundColor = oldBg;
-                        Lbl($"{v2s.CurrentDragForce:F0}N", 55);
-                        Lbl($"On: {cfg.DragAssistOnSteps}", 70);
-                        Lbl($"Off: {cfg.DragAssistOffSteps}", 75);
-                        Lbl($"OffN: {cfg.DragOffForceNewtons:F0}", 60);
+                        Lbl($"{v2s.CurrentDragForce:F0}N", 50);
+                        Lbl($"Taper: {taper:P0}", 70);
+                        Lbl($"{cfg.DragForceNewtons:F0}→{cfg.DragForceFloor:F0}N", 90);
+                        Lbl($"/ {cfg.DragTaperSteps} steps", 80);
                         Lbl($"UB: {cfg.DragUpperBodyFraction:P0}", 55);
                         GUILayout.FlexibleSpace();
                         EditorGUILayout.EndHorizontal();

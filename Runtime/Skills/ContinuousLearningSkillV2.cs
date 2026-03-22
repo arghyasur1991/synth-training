@@ -77,8 +77,6 @@ namespace Genesis.Sentience.Learning
         private long _dragDecisionCount;
         private float _dragOU; // current OU-drifting drag magnitude
         private Random _dragRng;
-        private bool _dragAssistOn = true; // true = assist phase, false = free phase
-        private long _dragCycleStep; // steps into current phase
 
         // Upper body indices for distributed drag (chest, spine, shoulders)
         private int[] _upperBodyIdx;
@@ -86,7 +84,8 @@ namespace Genesis.Sentience.Learning
 
         // ── Diagnostics ─────────────────────────────────────────────────
         public float CurrentDragForce => _dragOU;
-        public bool DragAssistActive => _dragAssistOn;
+        public float DragTaperProgress => sacConfig.DragTaperSteps > 0
+            ? Mathf.Clamp01((float)_dragDecisionCount / sacConfig.DragTaperSteps) : 1f;
         public float RawReward => _reward?.LastRawReward ?? 0f;
         public float CenteredReward => _reward?.LastCenteredReward ?? 0f;
         public float RewardBar => _reward?.RewardBar ?? 0f;
@@ -180,10 +179,8 @@ namespace Genesis.Sentience.Learning
                 $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim})" +
                 $", head={(_headBodyIdx > 0 ? $"body{_headBodyIdx} (standZ={_standingHeadZ:F3})" : "NOT FOUND")}" +
                 (sacConfig.ContextDim > 0 ? $", context={sacConfig.ContextDim}, seqLen={sacConfig.ContextSeqLen}" : "") +
-                (sacConfig.DragForceEnabled ? $", drag=OU({sacConfig.DragForceMin}-{sacConfig.DragForceMax}N, " +
-                    $"mean={sacConfig.DragForceNewtons}N, warmup={sacConfig.DragForceWarmupSteps})" +
-                    $", cycle=ON{sacConfig.DragAssistOnSteps}/OFF{sacConfig.DragAssistOffSteps} " +
-                    $"(offN={sacConfig.DragOffForceNewtons}N)" +
+                (sacConfig.DragForceEnabled ? $", drag={sacConfig.DragForceNewtons}N→{sacConfig.DragForceFloor}N " +
+                    $"over {sacConfig.DragTaperSteps} steps (OU σ={sacConfig.DragForceOUSigma})" +
                     $", upperBody={_upperBodyIdx?.Length ?? 0} ({sacConfig.DragUpperBodyFraction:P0})" : "") +
                 (sacConfig.PerJointOUSigmaEnabled ? ", perJointOU=ON" : "") +
                 $", weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
@@ -349,38 +346,26 @@ namespace Genesis.Sentience.Learning
         }
 
         /// <summary>
-        /// Apply upward drag force to upper body bones (chest, spine, shoulders, head)
-        /// via xfrc_applied. Cycles between assist (high force) and free (minimal force)
-        /// phases so the agent experiences assisted standing then must learn to maintain
-        /// posture on its own. Magnitude drifts via OU for data diversity.
+        /// Apply upward drag force to upper body bones with gradual taper.
+        /// Force linearly decays from DragForceNewtons to DragForceFloor over
+        /// DragTaperSteps, with OU noise for variation. The agent's own actions
+        /// always matter because force is comparable to (not overwhelming) body weight.
         /// All forces are world-frame: +Z = up regardless of body orientation.
         /// </summary>
         private unsafe void ApplyDragForce(MujocoLib.mjData_* data)
         {
             _dragDecisionCount++;
-            _dragCycleStep++;
 
-            // Cycle between assist and free phases
-            int phaseLen = _dragAssistOn ? sacConfig.DragAssistOnSteps : sacConfig.DragAssistOffSteps;
-            if (phaseLen > 0 && _dragCycleStep >= phaseLen)
-            {
-                _dragAssistOn = !_dragAssistOn;
-                _dragCycleStep = 0;
-            }
+            // Linear taper: start → floor over TaperSteps
+            float t = sacConfig.DragTaperSteps > 0
+                ? Mathf.Clamp01((float)_dragDecisionCount / sacConfig.DragTaperSteps)
+                : 1f;
+            float taperMean = Mathf.Lerp(sacConfig.DragForceNewtons, sacConfig.DragForceFloor, t);
 
-            // OU target depends on phase
-            float ouTarget = _dragAssistOn ? sacConfig.DragForceNewtons : sacConfig.DragOffForceNewtons;
-            float ouMax = _dragAssistOn ? sacConfig.DragForceMax : sacConfig.DragOffForceNewtons * 2f;
-
-            float dt = 1f;
-            float theta = _dragAssistOn ? sacConfig.DragForceOUTheta : 0.05f; // converge faster in off phase
-            float sigma = _dragAssistOn ? sacConfig.DragForceOUSigma : 5f;
+            // OU noise around the tapering mean
             float noise = (float)(_dragRng.NextDouble() * 2.0 - 1.0) * 1.7320508f;
-            _dragOU += theta * (ouTarget - _dragOU) * dt + sigma * noise * Mathf.Sqrt(dt);
-            _dragOU = Mathf.Clamp(_dragOU, sacConfig.DragForceMin, ouMax);
-
-            float warmup = Mathf.Clamp01((float)_dragDecisionCount / sacConfig.DragForceWarmupSteps);
-            float baseMag = _dragOU * warmup;
+            _dragOU += sacConfig.DragForceOUTheta * (taperMean - _dragOU) + sacConfig.DragForceOUSigma * noise;
+            _dragOU = Mathf.Max(0f, _dragOU);
 
             if (_upperBodyIdx != null)
             {
@@ -389,7 +374,7 @@ namespace Genesis.Sentience.Learning
                     int bIdx = _upperBodyIdx[i];
                     float bZ = (float)data->xpos[bIdx * 3 + 2];
                     float bGate = Mathf.Max(0f, 1f - bZ / _upperBodyStandingZ[i]);
-                    data->xfrc_applied[bIdx * 6 + 2] = baseMag * sacConfig.DragUpperBodyFraction * bGate;
+                    data->xfrc_applied[bIdx * 6 + 2] = _dragOU * sacConfig.DragUpperBodyFraction * bGate;
                 }
             }
         }
