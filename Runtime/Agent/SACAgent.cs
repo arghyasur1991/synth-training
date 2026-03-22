@@ -203,6 +203,7 @@ namespace Genesis.Sentience.Learning
         private readonly float _ouTheta;
         private readonly float _ouSigma;
         private readonly bool _useCorrelatedNoise;
+        private float[] _perJointOUSigma;
 
         // Pre-allocated inference tensor: avoids creating a new C# Tensor wrapper per call.
         // Lives outside any DisposeScope so it persists across calls.
@@ -263,8 +264,7 @@ namespace Genesis.Sentience.Learning
             {
                 _contextEncoder = new TemporalContextEncoder(
                     _contextEntryDim, _contextDim, config.ContextSeqLen,
-                    config.ContextDModel, config.ContextNHeads, config.ContextNLayers,
-                    config.ContextFeedforward, config.ContextDropout);
+                    config.ContextChannelSize);
                 _contextEncoder.to(device);
             }
 
@@ -291,12 +291,10 @@ namespace Genesis.Sentience.Learning
             {
                 _infContextA = new TemporalContextEncoder(
                     _contextEntryDim, _contextDim, config.ContextSeqLen,
-                    config.ContextDModel, config.ContextNHeads, config.ContextNLayers,
-                    config.ContextFeedforward, config.ContextDropout);
+                    config.ContextChannelSize);
                 _infContextB = new TemporalContextEncoder(
                     _contextEntryDim, _contextDim, config.ContextSeqLen,
-                    config.ContextDModel, config.ContextNHeads, config.ContextNLayers,
-                    config.ContextFeedforward, config.ContextDropout);
+                    config.ContextChannelSize);
                 _infContextA.to(torch.CPU);
                 _infContextB.to(torch.CPU);
                 _activeInfContext = _infContextA;
@@ -313,6 +311,17 @@ namespace Genesis.Sentience.Learning
             _ouTheta = config.OUTheta;
             _ouSigma = config.OUSigma;
             _ouState = new float[actDim];
+        }
+
+        /// <summary>
+        /// Set per-joint OU sigma array for differentiated exploration.
+        /// Array length must match ActDim. When set, GetRandomAction uses
+        /// per-element sigma instead of the uniform _ouSigma.
+        /// </summary>
+        public void SetPerJointOUSigma(float[] sigmaArray)
+        {
+            if (sigmaArray != null && sigmaArray.Length == ActDim)
+                _perJointOUSigma = sigmaArray;
         }
 
         private static System.Collections.Generic.IEnumerable<Parameter> ConcatParams(
@@ -428,12 +437,12 @@ namespace Genesis.Sentience.Learning
         {
             if (_useCorrelatedNoise)
             {
-                // Ornstein-Uhlenbeck process: produces temporally-correlated noise
-                // that generates smoother, more physically meaningful torque patterns.
+                bool perJoint = _perJointOUSigma != null;
                 for (int i = 0; i < ActDim; i++)
                 {
-                    float noise = (float)(rng.NextDouble() * 2.0 - 1.0) * 1.732f; // uniform → ~std=1
-                    _ouState[i] += _ouTheta * (0f - _ouState[i]) + _ouSigma * noise;
+                    float noise = (float)(rng.NextDouble() * 2.0 - 1.0) * 1.732f;
+                    float sigma = perJoint ? _perJointOUSigma[i] : _ouSigma;
+                    _ouState[i] += _ouTheta * (0f - _ouState[i]) + sigma * noise;
                     float clamped = _ouState[i] > 1f ? 1f : (_ouState[i] < -1f ? -1f : _ouState[i]);
                     _actionBuffer[i] = clamped * _actionScale;
                 }
@@ -978,6 +987,25 @@ namespace Genesis.Sentience.Learning
         [UnityEngine.Range(0.01f, 1f)]
         public float OUSigma = 0.3f;
 
+        [UnityEngine.Tooltip("Enable per-joint OU sigma based on actuator body-part names. " +
+            "When enabled, different joints use different exploration scales.")]
+        public bool PerJointOUSigmaEnabled = false;
+
+        [UnityEngine.Tooltip("OU sigma for hip actuators.")]
+        public float OUSigmaHip = 0.3f;
+        [UnityEngine.Tooltip("OU sigma for knee actuators.")]
+        public float OUSigmaKnee = 0.4f;
+        [UnityEngine.Tooltip("OU sigma for ankle actuators.")]
+        public float OUSigmaAnkle = 0.15f;
+        [UnityEngine.Tooltip("OU sigma for shoulder actuators.")]
+        public float OUSigmaShoulder = 0.2f;
+        [UnityEngine.Tooltip("OU sigma for elbow actuators.")]
+        public float OUSigmaElbow = 0.2f;
+        [UnityEngine.Tooltip("OU sigma for waist/torso actuators.")]
+        public float OUSigmaWaist = 0.1f;
+        [UnityEngine.Tooltip("OU sigma for actuators that don't match any keyword.")]
+        public float OUSigmaDefault = 0.3f;
+
         [UnityEngine.Header("Prioritized Experience Replay")]
 
         [UnityEngine.Tooltip("PER priority exponent. 0 = uniform sampling, 1 = full prioritization. " +
@@ -1006,32 +1034,33 @@ namespace Genesis.Sentience.Learning
         [UnityEngine.Header("Temporal Context")]
 
         [UnityEngine.Tooltip("Context vector dimension. 0 = disabled (reactive mode). " +
-            "When > 0, a transformer encodes recent history into a context " +
+            "When > 0, a Conv1D encoder compresses recent history into a context " +
             "vector prepended to observations for actor and critic.")]
         public int ContextDim = 0;
 
         [UnityEngine.Tooltip("History window length (number of past transitions). " +
-            "Lower = faster training (16 recommended). 64 is very expensive on MPS.")]
+            "16 recommended (0.64s at 25Hz). Conv1D scales linearly with length.")]
         public int ContextSeqLen = 16;
 
-        [UnityEngine.Tooltip("Transformer hidden dimension (d_model).")]
-        public int ContextDModel = 128;
-
-        [UnityEngine.Tooltip("Number of attention heads.")]
-        public int ContextNHeads = 4;
-
-        [UnityEngine.Tooltip("Number of transformer encoder layers.")]
-        public int ContextNLayers = 2;
-
-        [UnityEngine.Tooltip("Feedforward hidden size per encoder layer.")]
-        public int ContextFeedforward = 256;
-
-        [UnityEngine.Tooltip("Attention dropout (0 recommended for RL stability).")]
-        public float ContextDropout = 0f;
+        [UnityEngine.Tooltip("Base channel width for Conv1D encoder. " +
+            "Actual channels are 3x, 2x, 1x this value.")]
+        public int ContextChannelSize = 10;
 
         [UnityEngine.Tooltip("Steps before context reaches full strength. " +
             "During warmup, context is scaled by min(1, step/warmup).")]
         public int ContextWarmupSteps = 5000;
+
+        [UnityEngine.Header("Drag Force (Assisted Getting-Up)")]
+
+        [UnityEngine.Tooltip("Enable upward drag force on root body to help the agent " +
+            "experience standing states early in training.")]
+        public bool DragForceEnabled = false;
+
+        [UnityEngine.Tooltip("Maximum upward force in Newtons (body weight ~400N, 200 = ~0.5x).")]
+        public float DragForceNewtons = 200f;
+
+        [UnityEngine.Tooltip("Steps over which drag force ramps from 0 to full strength.")]
+        public int DragForceWarmupSteps = 5000;
 
         [UnityEngine.Header("Dyna-Style Dreaming")]
 

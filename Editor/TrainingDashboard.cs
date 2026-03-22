@@ -261,10 +261,14 @@ namespace Genesis.Sentience.Learning.EditorTools
                 {
                     DrawGraph(120, window,
                         (m.HeightFraction, C_PROGRESS, "Height%"),
+                        (m.AvgHeightFraction, C_BLEND, "AvgH%"),
+                        (m.DiscoveryGate, C_RECOVERY, "DiscGate"),
                         (m.RootZ, C_ROOTZ, "RootZ"));
 
                     EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
                     Lbl($"Height%: {m.HeightFraction.Latest:F3}", 100);
+                    Lbl($"AvgH%: {m.AvgHeightFraction.Latest:F3}", 90);
+                    Lbl($"Gate: {m.DiscoveryGate.Latest:F2}", 70);
                     Lbl($"RootZ: {m.RootZ.Latest:F3}", 100);
                     var v2cfg = ((ContinuousLearningSkillV2)_skill).sacConfig;
                     if (v2cfg.ContextDim > 0)
@@ -272,6 +276,8 @@ namespace Genesis.Sentience.Learning.EditorTools
                         Lbl($"Ctx: {v2cfg.ContextDim}d", 60);
                         Lbl($"Seq: {v2cfg.ContextSeqLen}", 50);
                     }
+                    if (v2cfg.DragForceEnabled)
+                        Lbl($"Drag: {v2cfg.DragForceNewtons}N", 80);
                     GUILayout.FlexibleSpace();
                     EditorGUILayout.EndHorizontal();
                 }

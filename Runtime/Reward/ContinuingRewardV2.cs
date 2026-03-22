@@ -14,6 +14,7 @@ namespace Genesis.Sentience.Learning
         public float Height, Orientation, Contact, Energy, Imitation;
         public float HeightFraction, RootZ;
         public float RawReward, CenteredReward, RewardBar;
+        public float DiscoveryGate, AvgHeightFraction;
     }
 
     /// <summary>
@@ -77,7 +78,8 @@ namespace Genesis.Sentience.Learning
         private bool _centeringInitialized;
         private int _stepCount;
 
-        // Diagnostics
+        private float _avgHeightFraction;
+
         private float _lastRawReward;
         private float _lastCenteredReward;
         private float _lastNearestFrameDist;
@@ -223,17 +225,21 @@ namespace Genesis.Sentience.Learning
                 rImitation = Mathf.Exp(-IMITATION_SCALE * _cachedNearestDist);
             }
 
-            // --- Fixed weights with physics-gated imitation ---
-            // Imitation is only meaningful once partially upright; smooth gate
-            // ramps from 0 at 30% height to full at 70% height.
-            float imitGate = Mathf.Clamp01((heightFraction - 0.3f) * 2.5f);
+            // --- Two-phase reward gating ---
+            // EMA of heightFraction smooths out transient spikes. When the agent
+            // is consistently fallen (avg < 0.3), energy + imitation = 0 so it
+            // can explore freely. As it learns to stand (avg > 0.6), penalties
+            // phase in smoothly via discoveryGate.
+            const float EMA_ALPHA = 0.001f;
+            _avgHeightFraction += EMA_ALPHA * (heightFraction - _avgHeightFraction);
+            float discoveryGate = Mathf.Clamp01((_avgHeightFraction - 0.3f) / 0.3f);
 
             float rawReward = ALIVE_BONUS
                             + weights.Height * rHeight
                             + weights.Orientation * rOrientation
                             + weights.Contact * rContact
-                            + weights.Energy * rEnergy
-                            + weights.Imitation * imitGate * rImitation;
+                            + weights.Energy * discoveryGate * rEnergy
+                            + weights.Imitation * discoveryGate * rImitation;
 
             _lastRawReward = rawReward;
             _lastSnapshot = new RewardSnapshotV2
@@ -241,11 +247,13 @@ namespace Genesis.Sentience.Learning
                 Height = weights.Height * rHeight,
                 Orientation = weights.Orientation * rOrientation,
                 Contact = weights.Contact * rContact,
-                Energy = weights.Energy * rEnergy,
-                Imitation = weights.Imitation * imitGate * rImitation,
+                Energy = weights.Energy * discoveryGate * rEnergy,
+                Imitation = weights.Imitation * discoveryGate * rImitation,
                 HeightFraction = heightFraction,
                 RootZ = rootZ,
                 RawReward = rawReward,
+                DiscoveryGate = discoveryGate,
+                AvgHeightFraction = _avgHeightFraction,
             };
 
             // --- Reward centering (same as V1) ---
@@ -389,6 +397,7 @@ namespace Genesis.Sentience.Learning
             bw.Write(_rewardBar);
             bw.Write(_centeringInitialized);
             bw.Write(_stepCount);
+            bw.Write(_avgHeightFraction);
         }
 
         public void Load(BinaryReader br)
@@ -397,6 +406,8 @@ namespace Genesis.Sentience.Learning
             _centeringInitialized = br.ReadBoolean();
             if (br.BaseStream.Position < br.BaseStream.Length)
                 _stepCount = br.ReadInt32();
+            if (br.BaseStream.Position < br.BaseStream.Length)
+                _avgHeightFraction = br.ReadSingle();
         }
     }
 }

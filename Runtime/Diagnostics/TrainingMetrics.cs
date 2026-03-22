@@ -118,6 +118,8 @@ namespace Genesis.Sentience.Learning
         // --- V2 metrics ---
         public readonly MetricRingBuffer HeightFraction;
         public readonly MetricRingBuffer ContactReward;
+        public readonly MetricRingBuffer DiscoveryGate;
+        public readonly MetricRingBuffer AvgHeightFraction;
 
         // --- Dynamic / skill-specific metrics ---
         private readonly Dictionary<string, MetricRingBuffer> _dynamic
@@ -167,6 +169,8 @@ namespace Genesis.Sentience.Learning
 
             HeightFraction = new MetricRingBuffer(capacity);
             ContactReward = new MetricRingBuffer(capacity);
+            DiscoveryGate = new MetricRingBuffer(capacity);
+            AvgHeightFraction = new MetricRingBuffer(capacity);
         }
 
         /// <summary>
@@ -237,6 +241,8 @@ namespace Genesis.Sentience.Learning
 
             ContactReward.Push(reward.Contact);
             HeightFraction.Push(reward.HeightFraction);
+            DiscoveryGate.Push(reward.DiscoveryGate);
+            AvgHeightFraction.Push(reward.AvgHeightFraction);
 
             Alpha.Push(alpha);
             QLoss.Push(qLoss);

@@ -70,6 +70,10 @@ namespace Genesis.Sentience.Learning
         private Tensor _historyTensor;  // preallocated (seqLen, 1, entryDim)
         private Tensor _historyMask;    // preallocated (1, seqLen) float
 
+        // Drag force state
+        private float _standingZ;
+        private long _dragDecisionCount;
+
         // ── Diagnostics ─────────────────────────────────────────────────
         public float RawReward => _reward?.LastRawReward ?? 0f;
         public float CenteredReward => _reward?.LastCenteredReward ?? 0f;
@@ -109,6 +113,7 @@ namespace Genesis.Sentience.Learning
         protected override unsafe void OnSkillInitialize()
         {
             float standingZ = (float)MjScene.Instance.Data->qpos[2];
+            _standingZ = standingZ;
 
             _reward = new ContinuingRewardV2(standingZ, _filter.includedQposIdx);
             _reward.SetNearestFrameInterval(nearestFrameInterval);
@@ -145,9 +150,14 @@ namespace Genesis.Sentience.Learning
                     dtype: TorchSharp.torch.ScalarType.Float32);
             }
 
+            if (sacConfig.PerJointOUSigmaEnabled)
+                BuildPerJointOUSigma(mjModel);
+
             Debug.Log($"ContinuousLearningV2: Initialized — " +
                 $"encoder={sacConfig.LatentDim > 0} (latent={sacConfig.LatentDim})" +
                 (sacConfig.ContextDim > 0 ? $", context={sacConfig.ContextDim}, seqLen={sacConfig.ContextSeqLen}" : "") +
+                (sacConfig.DragForceEnabled ? $", drag={sacConfig.DragForceNewtons}N (warmup={sacConfig.DragForceWarmupSteps})" : "") +
+                (sacConfig.PerJointOUSigmaEnabled ? ", perJointOU=ON" : "") +
                 $", weights: H={rewardWeights.Height:F2} O={rewardWeights.Orientation:F2} " +
                 $"C={rewardWeights.Contact:F2} E={rewardWeights.Energy:F2} I={rewardWeights.Imitation:F2}");
         }
@@ -163,8 +173,88 @@ namespace Genesis.Sentience.Learning
 
         protected override unsafe float ComputeReward()
         {
+            if (sacConfig.DragForceEnabled)
+                ApplyDragForce(MjScene.Instance.Data);
+
             return _reward.Compute(MjScene.Instance.Data, MjScene.Instance.Model,
                 in rewardWeights, _contact, _bodyWeight);
+        }
+
+        /// <summary>
+        /// Build per-joint OU sigma array by matching MuJoCo actuator names to
+        /// body-part keywords. Assigns differentiated exploration scales so large
+        /// joints (hips, knees) explore more while delicate joints (ankles, waist) explore less.
+        /// </summary>
+        private unsafe void BuildPerJointOUSigma(MujocoLib.mjModel_* model)
+        {
+            var indices = _filter.includedActuatorIdx;
+            int actDim = indices.Length;
+            var sigmaArray = new float[actDim];
+
+            var keywordMap = new (string keyword, float sigma)[]
+            {
+                ("hip", sacConfig.OUSigmaHip),
+                ("knee", sacConfig.OUSigmaKnee),
+                ("ankle", sacConfig.OUSigmaAnkle),
+                ("shoulder", sacConfig.OUSigmaShoulder),
+                ("elbow", sacConfig.OUSigmaElbow),
+                ("waist", sacConfig.OUSigmaWaist),
+                ("torso", sacConfig.OUSigmaWaist),
+                ("abdomen", sacConfig.OUSigmaWaist),
+            };
+
+            int matched = 0;
+            for (int i = 0; i < actDim; i++)
+            {
+                int mjIdx = indices[i];
+                string actuatorName = MujocoLib.mj_id2name(model, (int)MujocoLib.mjtObj.mjOBJ_ACTUATOR, mjIdx);
+
+                float sigma = sacConfig.OUSigmaDefault;
+                if (!string.IsNullOrEmpty(actuatorName))
+                {
+                    string lower = actuatorName.ToLowerInvariant();
+                    foreach (var (keyword, kwSigma) in keywordMap)
+                    {
+                        if (lower.Contains(keyword))
+                        {
+                            sigma = kwSigma;
+                            matched++;
+                            break;
+                        }
+                    }
+                }
+                sigmaArray[i] = sigma;
+            }
+
+            SACTrainer?.Agent?.SetPerJointOUSigma(sigmaArray);
+
+            float minS = float.MaxValue, maxS = float.MinValue;
+            for (int i = 0; i < actDim; i++)
+            {
+                if (sigmaArray[i] < minS) minS = sigmaArray[i];
+                if (sigmaArray[i] > maxS) maxS = sigmaArray[i];
+            }
+            Debug.Log($"ContinuousLearningV2: Per-joint OU sigma built — " +
+                $"{matched}/{actDim} matched keywords, range=[{minS:F2}, {maxS:F2}]");
+        }
+
+        /// <summary>
+        /// Apply upward force to the root body (body 1 = torso) via xfrc_applied.
+        /// Force scales inversely with height (strongest when fallen) and ramps up
+        /// over warmup steps. Same xfrc_applied pattern as PlayerHandBodies.
+        /// </summary>
+        private unsafe void ApplyDragForce(MujocoLib.mjData_* data)
+        {
+            _dragDecisionCount++;
+
+            float warmup = Mathf.Clamp01((float)_dragDecisionCount / sacConfig.DragForceWarmupSteps);
+            float rootZ = (float)data->qpos[2];
+            float heightGate = Mathf.Max(0f, 1f - rootZ / _standingZ);
+            float force = sacConfig.DragForceNewtons * heightGate * warmup;
+
+            // xfrc_applied is (nbody, 6): [fx, fy, fz, tx, ty, tz] per body.
+            // Body 1 is the root/torso. Apply force on z-axis (index 2).
+            data->xfrc_applied[1 * 6 + 2] = force;
         }
 
         protected override void SaveExtraState(string directory)
